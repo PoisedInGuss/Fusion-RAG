@@ -1,7 +1,0 @@
-{
-  "needed": 19753,
-  "found": 19753,
-  "max_k": 6,
-  "run_path": "/mnt/index/dpr/runs/TCTColBERT_nqtest_all.res",
-  "tsv_path": "/mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv"
-}

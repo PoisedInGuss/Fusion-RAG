@@ -1,7 +1,0 @@
-{
-  "needed": 8328,
-  "found": 8328,
-  "max_k": 6,
-  "run_path": "/mnt/index/dpr/runs/BM25_MonoT5_nqtest_all.res",
-  "tsv_path": "/mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv"
-}

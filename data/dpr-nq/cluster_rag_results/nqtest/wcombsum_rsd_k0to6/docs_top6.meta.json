@@ -1,7 +1,0 @@
-{
-  "needed": 20695,
-  "found": 20695,
-  "max_k": 6,
-  "run_path": "/mnt/index/dpr/fusion/wcombsum_rsd/nqtest_wcombsum_rsd.res",
-  "tsv_path": "/mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv"
-}
