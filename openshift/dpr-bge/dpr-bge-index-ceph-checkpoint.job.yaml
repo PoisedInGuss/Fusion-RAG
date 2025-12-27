@@ -1,0 +1,328 @@
+# Incoming: shared-datasets (DPR TSV), shared-indexes (index root) --- {tsv,str}
+# Processing: BGE dense encoding + FAISS HNSW indexing with 1M-doc checkpoints --- {1 job: HNSW build}
+# Outgoing: shared-indexes (dpr/bge HNSW index + docids) --- {faiss.IndexHNSWFlat,str}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpr-bge-index-ceph
+  namespace: 425krish
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: bge
+        image: image-registry.openshift-image-registry.svc:5000/425krish/bge-cu121:latest
+        imagePullPolicy: Always
+        command: ["/bin/bash", "-lc"]
+        workingDir: /tmp
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: TSV_PATH
+          value: /mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv
+        - name: OUT_DIR
+          value: /mnt/index/dpr/bge
+        - name: MODEL_NAME
+          value: BAAI/bge-base-en-v1.5
+        - name: BATCH_SIZE
+          value: "256"
+        - name: EMBED_DIM
+          value: "768"
+        - name: HNSW_M
+          value: "32"
+        - name: HNSW_EF_CONSTRUCTION
+          value: "200"
+        - name: THREADS
+          value: "16"
+        - name: CHECKPOINT_EVERY
+          value: "1000000"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: expandable_segments:True
+        args:
+        - |
+          set -euo pipefail
+          echo "[bge] RESEARCH-GRADE HNSW BUILD WITH CHECKPOINTING"
+          echo "[bge] starting on $(hostname)"
+          echo "[bge] TSV_PATH=${TSV_PATH}"
+          echo "[bge] OUT_DIR=${OUT_DIR}"
+          python3 - << 'PY'
+          import os
+          import json
+          import time
+          from pathlib import Path
+          
+          import numpy as np
+          import faiss
+          from sentence_transformers import SentenceTransformer
+          
+          TSV_PATH = Path(os.environ["TSV_PATH"])
+          OUT_DIR = Path(os.environ["OUT_DIR"])
+          MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-base-en-v1.5")
+          BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "256"))
+          EMBED_DIM = int(os.environ.get("EMBED_DIM", "768"))
+          HNSW_M = int(os.environ.get("HNSW_M", "32"))
+          HNSW_EF_CONSTRUCTION = int(os.environ.get("HNSW_EF_CONSTRUCTION", "200"))
+          THREADS = int(os.environ.get("THREADS", "16"))
+          CHECKPOINT_EVERY = int(os.environ.get("CHECKPOINT_EVERY", "1000000"))
+          
+          OUT_DIR.mkdir(parents=True, exist_ok=True)
+          docids_path = OUT_DIR / "docids.txt"
+          meta_path = OUT_DIR / "meta.json"
+          index_path = OUT_DIR / "index.hnsw.faiss"
+          checkpoint_dir = OUT_DIR / "checkpoints"
+          checkpoint_dir.mkdir(exist_ok=True)
+          
+          if index_path.exists():
+              print(f"[bge] final index already exists at {index_path}, exiting")
+              raise SystemExit(0)
+          
+          if not TSV_PATH.exists():
+              raise FileNotFoundError(f"TSV not found: {TSV_PATH}")
+          
+          print(f"[bge] loading encoder {MODEL_NAME} on GPU...")
+          device = "cuda"
+          try:
+              import torch
+              if not torch.cuda.is_available():
+                  device = "cpu"
+          except Exception:
+              device = "cpu"
+          print(f"[bge] device={device}")
+          
+          model = SentenceTransformer(MODEL_NAME, device=device)
+          
+          def iter_tsv():
+              """Stream TSV: docid, text, title"""
+              with TSV_PATH.open("r", encoding="utf-8", errors="ignore") as f:
+                  f.readline()  # skip header
+                  for line in f:
+                      parts = line.rstrip("\n").split("\t")
+                      if len(parts) < 3:
+                          continue
+                      docid, text, title = parts[0], parts[1], parts[2]
+                      combined = (title + " " + text).strip()
+                      if combined:
+                          yield docid, combined
+          
+          # Resume from the newest *valid* checkpoint if it exists
+          start_doc_count = 0
+          index = None
+          valid_checkpoint_num = None
+          # Sort checkpoints numerically (not lexicographically)
+          existing_checkpoints = sorted(
+              checkpoint_dir.glob("checkpoint_*.faiss"),
+              key=lambda p: int(p.stem.split("_")[1])
+          )
+          
+          if existing_checkpoints:
+              print(f"[bge] found {len(existing_checkpoints)} checkpoint(s): {[p.name for p in existing_checkpoints]}")
+              # Try checkpoints from newest to oldest until we find a consistent pair (faiss + docids)
+              for ckpt in reversed(existing_checkpoints):
+                  candidate_num = int(ckpt.stem.split("_")[1])
+                  docids_checkpoint = checkpoint_dir / f"checkpoint_{candidate_num}.docids"
+                  print(f"[bge] trying checkpoint {ckpt.name}")
+                  
+                  # Load FAISS index; if this fails, the checkpoint is corrupt (e.g., partial write)
+                  try:
+                      candidate_index = faiss.read_index(str(ckpt))
+                  except Exception as e:
+                      print(f"[bge] WARNING: failed to load {ckpt}: {e} - skipping")
+                      continue
+                  
+                  # Require matching docids file
+                  if not docids_checkpoint.exists():
+                      print(f"[bge] WARNING: missing docids file {docids_checkpoint.name} for checkpoint {candidate_num} - skipping")
+                      continue
+                  
+                  with docids_checkpoint.open("r", encoding="utf-8") as f:
+                      existing_docids = [line.strip() for line in f if line.strip()]
+                  
+                  if len(existing_docids) != candidate_index.ntotal:
+                      print(
+                          f"[bge] WARNING: checkpoint mismatch for {candidate_num}: "
+                          f"{len(existing_docids)} docids vs {candidate_index.ntotal} vectors - skipping"
+                      )
+                      continue
+                  
+                  # This checkpoint is consistent; use it
+                  index = candidate_index
+                  valid_checkpoint_num = candidate_num
+                  start_doc_count = candidate_num
+                  print(f"[bge] RESUMING from checkpoint at {start_doc_count:,} docs (ntotal={index.ntotal:,})")
+                  
+                  # Rebuild main docids.txt to exactly match the checkpoint
+                  with docids_path.open("w", encoding="utf-8") as out_f:
+                      for did in existing_docids:
+                          out_f.write(did + "\n")
+                  print(f"[bge] rebuilt main docids.txt with {len(existing_docids):,} entries")
+                  break
+          
+          if index is None:
+              print(f"[bge] NO VALID CHECKPOINT FOUND, starting fresh")
+              print(f"[bge] creating HNSW index: M={HNSW_M}, efConstruction={HNSW_EF_CONSTRUCTION}")
+              faiss.omp_set_num_threads(THREADS)
+              index = faiss.IndexHNSWFlat(EMBED_DIM, HNSW_M)
+              index.hnsw.efConstruction = HNSW_EF_CONSTRUCTION
+              index.metric_type = faiss.METRIC_INNER_PRODUCT
+          
+          print(f"[bge] encoding corpus and building HNSW graph (checkpointing every {CHECKPOINT_EVERY:,} docs)...")
+          doc_count = start_doc_count
+          batch_ids = []
+          batch_texts = []
+          all_docids = []
+          start = time.time()
+          skipped = 0
+          
+          # Open docids file for appending
+          docids_mode = "a" if start_doc_count > 0 else "w"
+          with docids_path.open(docids_mode, encoding="utf-8") as doc_f:
+              for docid, text in iter_tsv():
+                  # Skip docs we've already processed
+                  if skipped < start_doc_count:
+                      skipped += 1
+                      continue
+                  
+                  batch_ids.append(docid)
+                  batch_texts.append(text)
+                  all_docids.append(docid)
+                  
+                  if len(batch_texts) >= BATCH_SIZE:
+                      embs = model.encode(
+                          batch_texts,
+                          batch_size=BATCH_SIZE,
+                          convert_to_numpy=True,
+                          normalize_embeddings=True,
+                          show_progress_bar=False,
+                      ).astype("float32")
+                      index.add(embs)
+                      
+                      for did in batch_ids:
+                          doc_f.write(did + "\n")
+                      doc_f.flush()
+                      
+                      doc_count += len(batch_ids)
+                      
+                      # Progress logging every 10 batches (BGE is slower, log more frequently)
+                      if doc_count % (BATCH_SIZE * 10) == 0:
+                          elapsed = time.time() - start
+                          rate = (doc_count - start_doc_count) / elapsed if elapsed > 0 else 0
+                          print(f"[bge] {doc_count:,} docs indexed | {elapsed/60:.1f} min | {rate:.1f} docs/s")
+                      
+                      # Checkpoint every CHECKPOINT_EVERY docs
+                      if doc_count % CHECKPOINT_EVERY == 0 and doc_count > start_doc_count:
+                          checkpoint_file = checkpoint_dir / f"checkpoint_{doc_count}.faiss"
+                          checkpoint_tmp = checkpoint_dir / f"checkpoint_{doc_count}.faiss.tmp"
+                          checkpoint_docids = checkpoint_dir / f"checkpoint_{doc_count}.docids"
+                          checkpoint_docids_tmp = checkpoint_dir / f"checkpoint_{doc_count}.docids.tmp"
+                          
+                          print(f"[bge] CHECKPOINT at {doc_count:,} docs -> {checkpoint_file.name}")
+                          
+                          # Ensure docids on disk before snapshot
+                          doc_f.flush()
+                          os.fsync(doc_f.fileno())
+                          
+                          # Atomic write of FAISS index
+                          faiss.write_index(index, str(checkpoint_tmp))
+                          os.replace(checkpoint_tmp, checkpoint_file)
+                          
+                          # Atomic write of checkpoint docids (cumulative)
+                          import shutil
+                          shutil.copy2(str(docids_path), str(checkpoint_docids_tmp))
+                          os.replace(checkpoint_docids_tmp, checkpoint_docids)
+                          print(f"[bge] checkpoint docids: {checkpoint_docids} ({checkpoint_docids.stat().st_size} bytes)")
+                          
+                          # Retain only the last few checkpoints (avoid unbounded growth)
+                          KEEP_LATEST = 3
+                          all_ckpts = sorted(
+                              checkpoint_dir.glob("checkpoint_*.faiss"),
+                              key=lambda p: int(p.stem.split("_")[1])
+                          )
+                          old_ckpts = all_ckpts[:-KEEP_LATEST]
+                          for old_ckpt in old_ckpts:
+                              old_docids = checkpoint_dir / f"{old_ckpt.stem}.docids"
+                              print(f"[bge] removing old checkpoint {old_ckpt.name}")
+                              if old_ckpt.exists():
+                                  old_ckpt.unlink()
+                              if old_docids.exists():
+                                  old_docids.unlink()
+                      
+                      batch_ids = []
+                      batch_texts = []
+              
+              # Handle remaining batch
+              if batch_texts:
+                  embs = model.encode(
+                      batch_texts,
+                      batch_size=BATCH_SIZE,
+                      convert_to_numpy=True,
+                      normalize_embeddings=True,
+                      show_progress_bar=False,
+                  ).astype("float32")
+                  index.add(embs)
+                  for did in batch_ids:
+                      doc_f.write(did + "\n")
+                  doc_f.flush()
+                  doc_count += len(batch_ids)
+          
+          print(f"[bge] total docs indexed: {doc_count:,}")
+          print(f"[bge] HNSW graph ntotal={index.ntotal:,}")
+          
+          # Save final index
+          print(f"[bge] saving FINAL index to {index_path}...")
+          faiss.write_index(index, str(index_path))
+          meta = {
+              "model_name": MODEL_NAME,
+              "embed_dim": EMBED_DIM,
+              "n_docs": doc_count,
+              "index_type": "HNSWFlat",
+              "hnsw_M": HNSW_M,
+              "hnsw_efConstruction": HNSW_EF_CONSTRUCTION,
+              "compression": "none",
+              "quality": "research-grade (near-exact)",
+              "tsv_path": str(TSV_PATH),
+              "checkpoint_strategy": f"every_{CHECKPOINT_EVERY}_docs",
+          }
+          meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+          print(f"[bge] saved final index to {index_path}")
+          print(f"[bge] saved metadata to {meta_path}")
+          
+          # Clean up all checkpoints after final save
+          for ckpt in checkpoint_dir.glob("checkpoint_*"):
+              ckpt.unlink()
+          print(f"[bge] cleaned all checkpoints")
+          
+          total_time = time.time() - start
+          print(f"[bge] total indexing time: {total_time/60:.1f} min ({total_time/3600:.2f} hrs)")
+          print(f"[bge] avg rate: {(doc_count - start_doc_count)/total_time:.1f} docs/s")
+          PY
+          echo "[bge] DONE"
+        resources:
+          requests:
+            cpu: "8"
+            memory: "100Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "16"
+            memory: "130Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: datasets
+          mountPath: /mnt/datasets
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: datasets
+        persistentVolumeClaim:
+          claimName: shared-datasets
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes
+
+

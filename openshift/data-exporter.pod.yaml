@@ -1,0 +1,44 @@
+# Incoming: shared-indexes (runs/ only), shared-rag-results --- {trec,jsonl}
+# Processing: temporary pod for oc rsync data export --- {1 job: data transfer}
+# Outgoing: local filesystem via oc rsync --- {trec,jsonl}
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: data-exporter
+  namespace: 425krish
+spec:
+  restartPolicy: Never
+  containers:
+  - name: exporter
+    image: docker.io/alpine:latest
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      apk add --no-cache rsync
+      echo "[exporter] ready for rsync"
+      echo "[exporter] runfiles at: /mnt/index/dpr/runs/"
+      echo "[exporter] rag results at: /mnt/rag/"
+      sleep 3600
+    volumeMounts:
+    - name: indexes
+      mountPath: /mnt/index
+      readOnly: true
+    - name: rag-results
+      mountPath: /mnt/rag
+      readOnly: true
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+  volumes:
+  - name: indexes
+    persistentVolumeClaim:
+      claimName: shared-indexes
+  - name: rag-results
+    persistentVolumeClaim:
+      claimName: shared-rag-results

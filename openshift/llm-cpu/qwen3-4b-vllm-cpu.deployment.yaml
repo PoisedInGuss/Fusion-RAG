@@ -1,0 +1,102 @@
+# Incoming: ./architecture/data_flow_standard.yaml --- {Dict, YAML}
+# Processing: define CPU-only Qwen3 inference deployment spec --- {1 job: generation}
+# Outgoing: OpenShift Deployment qwen3-4b-vllm --- {Dict, YAML}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-4b-vllm
+  namespace: 425krish
+  labels:
+    app: qwen3-4b-vllm
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qwen3-4b-vllm
+  template:
+    metadata:
+      labels:
+        app: qwen3-4b-vllm
+    spec:
+      containers:
+      - name: vllm
+        image: image-registry.openshift-image-registry.svc:5000/425krish/vllm-cpu:latest
+        imagePullPolicy: Always
+        command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+        args:
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+        - --model
+        - Qwen/Qwen3-4B-Instruct-2507
+        - --device
+        - cpu
+        - --dtype
+        - bfloat16
+        - --max-model-len
+        - "32768"
+        - --tensor-parallel-size
+        - "1"
+        - --download-dir
+        - /mnt/llm-cache/hf
+        - --enforce-eager
+        - --seed
+        - "42"
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: HF_HOME
+          value: /mnt/llm-cache/hf
+        - name: HF_DATASETS_CACHE
+          value: /mnt/llm-cache/hf/datasets
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: VLLM_CPU_KVCACHE_SPACE
+          value: "16"
+        - name: VLLM_OPENVINO_KVCACHE_SPACE
+          value: "16"
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: "24"
+            memory: 48Gi
+          limits:
+            cpu: "48"
+            memory: 64Gi
+        volumeMounts:
+        - mountPath: /mnt/llm-cache
+          name: llm-cache
+        - mountPath: /dev/shm
+          name: shm
+      volumes:
+      - name: llm-cache
+        persistentVolumeClaim:
+          claimName: shared-llm
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+

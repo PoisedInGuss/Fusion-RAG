@@ -1,0 +1,61 @@
+# Incoming: ./src --- {Dict, Python}
+# Processing: enforce module boundaries --- {1 job: governance}
+# Outgoing: ./Architecture/module_structure_standard.yaml consumers --- {Dict, YAML}
+version: "1.0.0"
+modules:
+  - name: ingestion
+    responsibilities:
+      - "Download or stream corpora into persistent storage."
+      - "Expose normalized datasets to retrievers."
+    inputs:
+      - "external datasets (TSV, JSONL)"
+    outputs:
+      - "shared-datasets PVC directories"
+    owns:
+      - "scripts/01_index.py"
+      - "scripts/02_retrieve.py"
+  - name: retrievers
+    responsibilities:
+      - "Index, search, and score corpora."
+    inputs:
+      - "shared-datasets"
+    outputs:
+      - "shared-indexes (FAISS, Lucene, TREC runs)"
+    owns:
+      - "src/retrievers"
+  - name: fusion
+    responsibilities:
+      - "Blend heterogeneous retriever outputs per config."
+    inputs:
+      - "retriever runfiles"
+    outputs:
+      - "data/<dataset>/fused/*.res"
+    owns:
+      - "src/fusion.py"
+  - name: rag_generation
+    responsibilities:
+      - "Format prompts, call LLMs, and capture outputs."
+    inputs:
+      - "retriever runfiles"
+      - "datasets (nq_test.json)"
+      - "LM Studio/vLLM service"
+    outputs:
+      - "shared-rag-results shards"
+    owns:
+      - "src/generation.py"
+      - "scripts/12_rag_runfile_eval.py"
+  - name: evaluation
+    responsibilities:
+      - "Compute QA metrics, recall, and governance traces."
+    inputs:
+      - "shared-rag-results shards"
+    outputs:
+      - "metrics JSON under shared-rag-results"
+    owns:
+      - "src/evaluation"
+coupling_rules:
+  - "Modules may consume outputs only from the immediately preceding layer (ingestion -> retrievers -> fusion -> rag_generation -> evaluation)."
+  - "Cross-layer helpers must live under src/, not scripts/."
+  - "PVC mounts must map to a single module's ownership boundary."
+  - "No module may compensate for another's validation gaps."
+

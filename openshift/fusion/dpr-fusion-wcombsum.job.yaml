@@ -1,0 +1,69 @@
+# Incoming: shared-indexes/dpr (norm.res, qpp) --- {TREC runs, .mmnorm.qpp}
+# Processing: QPP-weighted CombSUM fusion --- {1 job: wcombsum}
+# Outgoing: shared-indexes/dpr/fusion/wcombsum_rsd --- {TREC fused run}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpr-fusion-wcombsum
+  namespace: 425krish
+  labels:
+    app: fusion
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: fusion
+        image: image-registry.openshift-image-registry.svc:5000/425krish/rag-runner:latest
+        imagePullPolicy: Always
+        workingDir: /app
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: SRC_SKIP_PACKAGE_IMPORTS
+          value: "0"
+        - name: SRC_SKIP_IR_EVAL
+          value: "0"
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          
+          RUNS_DIR=/mnt/index/dpr/runs
+          QPP_DIR=/mnt/index/dpr/qpp
+          FUSION_DIR=/mnt/index/dpr/fusion
+          
+          echo "[fusion] Creating output directory..."
+          mkdir -p "${FUSION_DIR}/wcombsum_rsd"
+          
+          echo "[fusion] Running QPP-weighted CombSUM (RSD)..."
+          python scripts/05_fusion.py \
+            --method wcombsum \
+            --runs_dir "${RUNS_DIR}" \
+            --qpp_dir "${QPP_DIR}" \
+            --qpp_model RSD \
+            --output "${FUSION_DIR}/wcombsum_rsd/nqtest_wcombsum_rsd.res"
+          
+          echo "[fusion] Listing fusion outputs:"
+          ls -lh "${FUSION_DIR}"/wcombsum_rsd
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+          limits:
+            cpu: "8"
+            memory: "32Gi"
+        volumeMounts:
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes
+

@@ -1,0 +1,101 @@
+# Incoming: ./architecture/data_flow_standard.yaml --- {Dict, YAML}
+# Processing: define GPU-enabled Qwen3 inference deployment spec --- {1 job: generation}
+# Outgoing: OpenShift Deployment qwen3-4b-vllm-gpu --- {Dict, YAML}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-4b-vllm-gpu
+  namespace: 425krish
+  labels:
+    app: qwen3-4b-vllm-gpu
+spec:
+  replicas: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qwen3-4b-vllm-gpu
+  template:
+    metadata:
+      labels:
+        app: qwen3-4b-vllm-gpu
+    spec:
+      containers:
+      - name: vllm
+        image: image-registry.openshift-image-registry.svc:5000/425krish/vllm-cu121:latest
+        imagePullPolicy: Always
+        command:
+        - python3
+        - -m
+        - vllm.entrypoints.openai.api_server
+        args:
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+        - --model
+        - Qwen/Qwen3-4B-Instruct-2507
+        - --dtype
+        - bfloat16
+        - --max-model-len
+        - "8192"
+        - --tensor-parallel-size
+        - "1"
+        - --download-dir
+        - /mnt/llm-cache/hf
+        - --gpu-memory-utilization
+        - "0.70"
+        - --seed
+        - "42"
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: HF_HOME
+          value: /mnt/llm-cache/hf
+        - name: HF_DATASETS_CACHE
+          value: /mnt/llm-cache/hf/datasets
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: "8"
+            memory: 32Gi
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "16"
+            memory: 48Gi
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - mountPath: /mnt/llm-cache
+          name: llm-cache
+        - mountPath: /dev/shm
+          name: shm
+      volumes:
+      - name: llm-cache
+        persistentVolumeClaim:
+          claimName: shared-llm
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi
+

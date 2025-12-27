@@ -1,0 +1,234 @@
+# Incoming: shared-datasets (nq_test.json), shared-indexes (BM25 index, corpus TSV) --- {Dict,str}
+# Processing: BM25 >> BGE-Reranker-Large two-stage retrieval --- {2 jobs: PyTerrier BM25, BGE cross-encoder reranking}
+# Outgoing: shared-indexes (BM25_BGE_Reranker_nqtest_all.res) --- {TREC runfile,str}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpr-bm25-bge-reranker-retrieve-nqtest
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: bm25-bge-reranker
+        image: image-registry.openshift-image-registry.svc:5000/425krish/bm25-monot5:latest
+        imagePullPolicy: Always
+        workingDir: /tmp
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: CUDA_VISIBLE_DEVICES
+          value: ""
+        - name: NQ_PATH
+          value: /mnt/datasets/dpr/nq_test.json
+        - name: INDEX_DIR
+          value: /mnt/index/dpr/index/pyterrier
+        - name: TSV_PATH
+          value: /mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv
+        - name: RUN_PATH
+          value: /mnt/index/dpr/runs/BM25_BGE_Reranker_nqtest_all.res
+        - name: TOP_K
+          value: "100"
+        - name: FIRST_STAGE_K
+          value: "100"
+        - name: BATCH_SIZE
+          value: "32"
+        - name: MINI_BATCH
+          value: "50"
+        - name: RERANKER_MODEL
+          value: BAAI/bge-reranker-large
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          echo "[bm25-bge-reranker] nq_test: ${NQ_PATH}"
+          echo "[bm25-bge-reranker] index: ${INDEX_DIR}"
+          echo "[bm25-bge-reranker] tsv: ${TSV_PATH}"
+          echo "[bm25-bge-reranker] reranker: ${RERANKER_MODEL}"
+          
+          python3 - << 'PY'
+          import os
+          import re
+          import json
+          import time
+          from pathlib import Path
+          
+          import pandas as pd
+          import numpy as np
+          from sentence_transformers import CrossEncoder
+          import pyterrier as pt
+          
+          NQ_PATH = Path(os.environ["NQ_PATH"])
+          INDEX_DIR = os.environ["INDEX_DIR"]
+          TSV_PATH = Path(os.environ["TSV_PATH"])
+          RUN_PATH = Path(os.environ["RUN_PATH"])
+          TOP_K = int(os.environ.get("TOP_K", "100"))
+          FIRST_STAGE_K = int(os.environ.get("FIRST_STAGE_K", "100"))
+          RERANKER_BATCH = int(os.environ.get("BATCH_SIZE", "32"))
+          MINI_BATCH = int(os.environ.get("MINI_BATCH", "50"))
+          RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-large")
+          
+          os.makedirs(os.environ.get("PYTERRIER_HOME", "/tmp/.pyterrier"), exist_ok=True)
+          RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
+          
+          # Initialize PyTerrier
+          pt.init()
+          print("[bm25-bge-reranker] PyTerrier initialized")
+          
+          def sanitize_query(q: str) -> str:
+              """Remove special chars that break PyTerrier query parser."""
+              q = re.sub(r"[^a-zA-Z0-9\s]", " ", q)
+              q = re.sub(r"\s+", " ", q)
+              return q.strip()
+          
+          # Load queries from nq_test.json
+          print(f"[bm25-bge-reranker] loading queries from {NQ_PATH}...")
+          data = json.load(NQ_PATH.open("r", encoding="utf-8"))
+          items = data.get("data", [])
+          queries = []
+          for ex in items:
+              q = (ex.get("question") or "").strip()
+              if not q:
+                  continue
+              qid = str(ex.get("example_id"))
+              if qid == "None":
+                  continue
+              queries.append({"qid": qid, "query": sanitize_query(q), "query_orig": q})
+          
+          print(f"[bm25-bge-reranker] {len(queries)} queries loaded")
+          
+          # Build corpus offset index for fast docid -> text lookup
+          print(f"[bm25-bge-reranker] building corpus offset index...")
+          corpus_offsets = {}
+          with TSV_PATH.open("r", encoding="utf-8", errors="ignore") as f:
+              offset = f.tell()
+              header = f.readline()
+              offset = f.tell()
+              while True:
+                  line_start = offset
+                  line = f.readline()
+                  if not line:
+                      break
+                  parts = line.split("\t", 1)
+                  if parts:
+                      docid = parts[0]
+                      corpus_offsets[docid] = line_start
+                  offset = f.tell()
+          
+          print(f"[bm25-bge-reranker] indexed {len(corpus_offsets):,} documents")
+          
+          # BM25 first stage with in-memory index
+          print(f"[bm25-bge-reranker] initializing BM25 retriever with in-memory index...")
+          index = pt.IndexFactory.of(INDEX_DIR, memory=True)
+          print(f"[bm25-bge-reranker] index loaded into memory")
+          bm25 = pt.BatchRetrieve(
+              index,
+              wmodel="BM25",
+              num_results=FIRST_STAGE_K,
+              metadata=["docno"],
+              controls={"bm25.k_1": "0.9", "bm25.b": "0.4"}
+          )
+          
+          # BGE-Reranker (CrossEncoder)
+          print(f"[bm25-bge-reranker] loading BGE-Reranker {RERANKER_MODEL} on CPU...")
+          reranker = CrossEncoder(RERANKER_MODEL, device="cpu")
+          
+          # Process in mini-batches
+          tmp_path = RUN_PATH.with_suffix(".part")
+          if tmp_path.exists():
+              tmp_path.unlink()
+          
+          total_time = time.time()
+          with tmp_path.open("w", encoding="utf-8") as out_f:
+              for batch_idx in range(0, len(queries), MINI_BATCH):
+                  batch_q = queries[batch_idx:batch_idx + MINI_BATCH]
+                  batch_df = pd.DataFrame(batch_q)
+                  
+                  # Stage 1: BM25
+                  t0 = time.time()
+                  bm25_results = bm25.transform(batch_df)
+                  print(f"[bm25-bge-reranker] batch {batch_idx//MINI_BATCH + 1}: BM25 retrieved {len(bm25_results)} results in {time.time()-t0:.1f}s")
+                  
+                  if len(bm25_results) == 0:
+                      continue
+                  
+                  # Fetch document texts
+                  t0 = time.time()
+                  tsv_file = TSV_PATH.open("r", encoding="utf-8", errors="ignore")
+                  texts = []
+                  for _, row in bm25_results.iterrows():
+                      docid = row["docno"]
+                      if docid not in corpus_offsets:
+                          texts.append("")
+                          continue
+                      tsv_file.seek(corpus_offsets[docid])
+                      line = tsv_file.readline()
+                      parts = line.rstrip("\n").split("\t")
+                      if len(parts) >= 3:
+                          text_content = parts[1]
+                          title = parts[2]
+                          combined = (title + " " + text_content).strip()
+                          texts.append(combined)
+                      else:
+                          texts.append("")
+                  tsv_file.close()
+                  bm25_results["text"] = texts
+                  print(f"[bm25-bge-reranker] batch {batch_idx//MINI_BATCH + 1}: fetched texts in {time.time()-t0:.1f}s")
+                  
+                  # Stage 2: BGE-Reranker (CrossEncoder)
+                  t0 = time.time()
+                  # Build query-doc pairs for CrossEncoder
+                  pairs = []
+                  for _, row in bm25_results.iterrows():
+                      # Find original query for this qid
+                      q_orig = next((q["query_orig"] for q in batch_q if q["qid"] == row["qid"]), "")
+                      pairs.append([q_orig, row["text"]])
+                  
+                  # Score with CrossEncoder
+                  scores = reranker.predict(pairs, batch_size=RERANKER_BATCH, show_progress_bar=False)
+                  bm25_results["rerank_score"] = scores
+                  
+                  # Sort by rerank score
+                  bm25_results = bm25_results.sort_values(["qid", "rerank_score"], ascending=[True, False])
+                  print(f"[bm25-bge-reranker] batch {batch_idx//MINI_BATCH + 1}: reranked in {time.time()-t0:.1f}s")
+                  
+                  # Write top-k
+                  for qid in batch_df["qid"]:
+                      qid_results = bm25_results[bm25_results["qid"] == qid].head(TOP_K)
+                      for rank, (_, row) in enumerate(qid_results.iterrows(), start=1):
+                          out_f.write(f"{qid} Q0 {row['docno']} {rank} {row['rerank_score']:.6f} BM25_BGE_Reranker\n")
+                  
+                  print(f"[bm25-bge-reranker] batch {batch_idx//MINI_BATCH + 1} done ({batch_idx + len(batch_q)}/{len(queries)})")
+          
+          tmp_path.rename(RUN_PATH)
+          print(f"[bm25-bge-reranker] total time: {time.time() - total_time:.1f}s")
+          print(f"[bm25-bge-reranker] run written to {RUN_PATH}")
+          PY
+          echo "[bm25-bge-reranker] DONE"
+        resources:
+          requests:
+            cpu: "24"
+            memory: "32Gi"
+          limits:
+            cpu: "48"
+            memory: "48Gi"
+        volumeMounts:
+        - name: datasets
+          mountPath: /mnt/datasets
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: datasets
+        persistentVolumeClaim:
+          claimName: shared-datasets
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes
+

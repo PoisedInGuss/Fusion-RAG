@@ -1,0 +1,66 @@
+# Incoming: storage-indexes PVC (RBD, RWO) --- {Filesystem}
+# Processing: index copy --- {1 job: rsync-like directory copy}
+# Outgoing: shared-indexes PVC (CephFS, RWX) --- {Filesystem}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-indexes-to-cephfs
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: migrate
+        image: python:3.11-slim
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          echo "[migrate-indexes] uid/gid: $(id)"
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+
+          SRC = Path("/mnt/src")
+          DST = Path("/mnt/dst")
+          SKIP = {"lost+found"}
+
+          print(f"[migrate-indexes] copying {SRC} -> {DST}")
+          if not SRC.exists():
+              print("[migrate-indexes] WARNING: source missing, nothing to copy")
+          else:
+              DST.mkdir(parents=True, exist_ok=True)
+              for entry in SRC.iterdir():
+                  if entry.name in SKIP:
+                      print(f"[migrate-indexes] skip {entry}")
+                      continue
+                  target = DST / entry.name
+                  if entry.is_dir():
+                      print(f"[migrate-indexes] dir {entry} -> {target}")
+                      shutil.copytree(entry, target, symlinks=True)
+                  else:
+                      print(f"[migrate-indexes] file {entry} -> {target}")
+                      shutil.copy2(entry, target)
+
+          print("[migrate-indexes] copy complete")
+          PY
+          echo "[migrate-indexes] du summary"
+          du -sh /mnt/src || true
+          du -sh /mnt/dst || true
+          echo "[migrate-indexes] DONE"
+        volumeMounts:
+        - name: src
+          mountPath: /mnt/src
+        - name: dst
+          mountPath: /mnt/dst
+      volumes:
+      - name: src
+        persistentVolumeClaim:
+          claimName: storage-indexes
+      - name: dst
+        persistentVolumeClaim:
+          claimName: shared-indexes
+

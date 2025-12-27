@@ -1,0 +1,63 @@
+# Cache directories - contains model weights and BGE indexes (multi-GB)
+cache/
+
+# BGE indexes only (15GB each - too large for Git)
+# PyTerrier and SPLADE indexes are tracked with LFS
+
+# Large result files - KEPT for reproducibility
+# data/*/runs/  # ~138MB - individual retriever runs
+# data/*/fused/*.res  # ~339MB - fused results
+
+# JSON result files - KEPT (evaluation results)
+# data/*/results/*.json  # Now included for reproducibility
+
+# Keep models and QPP scores (small, essential)
+# data/*/models/ - KEEP
+# data/*/qpp/ - KEEP
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Repo-local OpenShift/OKD CLI artifacts (never commit)
+.kube/
+bin/
+oc/
+
+# Office temp/lock files
+~$*.xlsx
+
+# Large text logs
+combsum.txt
+
+# Java compiled
+*.class
+*.log
+
+config.yaml

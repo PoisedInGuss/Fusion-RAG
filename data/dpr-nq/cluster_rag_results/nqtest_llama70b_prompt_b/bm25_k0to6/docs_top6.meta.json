@@ -1,0 +1,7 @@
+{
+  "needed": 1854,
+  "found": 1854,
+  "max_k": 6,
+  "run_path": "/mnt/index/dpr/runs/BM25_nqtest_all.res",
+  "tsv_path": "/mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv"
+}

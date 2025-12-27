@@ -1,0 +1,88 @@
+# Incoming: shared-rag-results (all RAG metrics.json) --- {Dict,str}
+# Processing: aggregate EM/F1/latency per retriever, per shot, for Qwen and Llama --- {1 job: metrics aggregation}
+# Outgoing: oc logs job/rag-bm25-k0to6-metrics (CSV-style metrics table) --- {Dict,str}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rag-bm25-k0to6-metrics
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: eval
+        image: python:3.11-slim
+        imagePullPolicy: IfNotPresent
+        env: []
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          python - << 'PY'
+          import json
+          from pathlib import Path
+
+          ROOTS = [
+              ("QWEN3-4B", Path("/mnt/rag/nqtest")),
+              ("LLAMA-3.3-70B", Path("/mnt/rag/nqtest_llama70b")),
+          ]
+
+          RETRIEVER_DIRS = {
+              "BM25": "bm25_k0to6",
+              "SPLADE": "splade_k0to6",
+              "BM25-MonoT5": "bm25_monot5_k0to6",
+              "BM25-TCT": "bm25_tct_k0to6",
+              "BM25-BGE-Reranker": "bm25_bge_reranker_k0to6",
+              "TCT-ColBERT": {
+                  "QWEN3-4B": "tctcolbert_k0to6",
+                  "LLAMA-3.3-70B": "tct_k0to6",
+              },
+              "BGE": "bge_k0to6",
+          }
+
+          def get_dir(model_label: str, base: Path, retriever: str) -> Path:
+              entry = RETRIEVER_DIRS[retriever]
+              if isinstance(entry, dict):
+                  sub = entry.get(model_label)
+                  if not sub:
+                      return base / "__missing__"
+                  return base / sub
+              return base / entry
+
+          print("=== RAG METRICS SUMMARY (from metrics.json) ===")
+          for model_label, base in ROOTS:
+              print(f"\nMODEL: {model_label}")
+              print("RETRIEVER,SHOT,k,EM,F1,CONTAINMENT,LATENCY_MS,CONTEXT_CHARS")
+              for retriever in ["BM25", "SPLADE", "BM25-MonoT5", "BM25-TCT", "BM25-BGE-Reranker", "TCT-ColBERT", "BGE"]:
+                  metrics_dir = get_dir(model_label, base, retriever)
+                  metrics_path = metrics_dir / "metrics.json"
+                  if not metrics_path.exists():
+                      print(f"{retriever},ALL,-,NA,NA,NA,NA,NA  # metrics.json missing at {metrics_path}")
+                      continue
+                  try:
+                      payload = json.loads(metrics_path.read_text(encoding='utf-8'))
+                  except Exception as exc:
+                      print(f"{retriever},ALL,-,ERR,ERR,ERR,ERR,ERR  # failed to parse {metrics_path}: {exc}")
+                      continue
+                  shots = payload.get("shots", {})
+                  for k_str in sorted(shots.keys(), key=lambda s: int(s)):
+                      shot = shots[k_str]
+                      em = shot.get("em", 0.0)
+                      f1 = shot.get("f1", 0.0)
+                      containment = shot.get("containment", 0.0)
+                      latency = shot.get("latency_ms", 0.0)
+                      ctx = shot.get("context_chars", 0.0)
+                      print(f"{retriever},{k_str},{shot.get('k', k_str)},{em:.4f},{f1:.4f},{containment:.4f},{latency:.1f},{ctx:.1f}")
+          PY
+          echo "[rag-eval] DONE"
+        volumeMounts:
+        - name: rag
+          mountPath: /mnt/rag
+      volumes:
+      - name: rag
+        persistentVolumeClaim:
+          claimName: shared-rag-results
+

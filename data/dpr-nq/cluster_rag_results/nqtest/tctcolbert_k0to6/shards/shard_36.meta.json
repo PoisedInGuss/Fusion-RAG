@@ -1,0 +1,62 @@
+{
+  "shard_index": 36,
+  "shard_count": 37,
+  "summary": {
+    "0": {
+      "n": 10,
+      "em": 0.2,
+      "f1": 0.32666666666666666,
+      "containment": 0.3,
+      "latency_ms": 127.98123359680176,
+      "context_chars": 0.0
+    },
+    "1": {
+      "n": 10,
+      "em": 0.2,
+      "f1": 0.35,
+      "containment": 0.4,
+      "latency_ms": 109.25123691558838,
+      "context_chars": 645.0
+    },
+    "2": {
+      "n": 10,
+      "em": 0.2,
+      "f1": 0.35,
+      "containment": 0.4,
+      "latency_ms": 129.95684146881104,
+      "context_chars": 1313.9
+    },
+    "3": {
+      "n": 10,
+      "em": 0.3,
+      "f1": 0.4,
+      "containment": 0.4,
+      "latency_ms": 136.9258165359497,
+      "context_chars": 1946.4
+    },
+    "4": {
+      "n": 10,
+      "em": 0.4,
+      "f1": 0.5322222222222223,
+      "containment": 0.7,
+      "latency_ms": 173.43006134033203,
+      "context_chars": 2576.8
+    },
+    "5": {
+      "n": 10,
+      "em": 0.5,
+      "f1": 0.61,
+      "containment": 0.7,
+      "latency_ms": 168.80033016204834,
+      "context_chars": 3204.8
+    },
+    "6": {
+      "n": 10,
+      "em": 0.4,
+      "f1": 0.5766666666666667,
+      "containment": 0.7,
+      "latency_ms": 187.18414306640625,
+      "context_chars": 3828.5
+    }
+  }
+}

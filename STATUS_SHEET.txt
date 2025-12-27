@@ -1,0 +1,256 @@
+================================================================================
+                    QPP-FUSION-RAG PROJECT STATUS SHEET
+                         Generated: Dec 24, 2025 (21:05 UTC)
+================================================================================
+
+================================================================================
+SECTION 1: DENSE INDEXES (21M docs corpus)
+================================================================================
+
+INDEX               STATUS          PROGRESS        LOCATION
+--------------------------------------------------------------------------------
+PyTerrier/BM25      COMPLETE        21,015,324      /mnt/index/dpr/index/pyterrier/
+SPLADE              COMPLETE        21,015,324      /mnt/index/dpr/splade/index/
+TCT-ColBERT         COMPLETE        21,015,324      /mnt/index/dpr/tct_colbert/
+BGE                 COMPLETE        21,015,324      /mnt/index/dpr/bge/
+
+Notes:
+- All indexes use research-grade HNSW (M=32, efConstruction=200), compression=none.
+
+
+================================================================================
+SECTION 2: RETRIEVAL RUNFILES
+================================================================================
+
+RUNFILE                               STATUS      SIZE    DATE
+--------------------------------------------------------------------------------
+BM25_nqtest_all.res                   COMPLETE    18M     Dec 21
+SPLADE_nqtest_all.res                 COMPLETE    19M     Dec 23
+BM25_MonoT5_nqtest_all.res            COMPLETE    20M     Dec 23
+BM25_TCT_nqtest_all.res               COMPLETE    19M     Dec 23
+BM25_BGE_Reranker_nqtest_all.res      COMPLETE    22M     Dec 24
+TCTColBERT_nqtest_all.res             COMPLETE    -       Dec 24
+BGE_nqtest_all.res                    COMPLETE    -       Dec 24
+
+FUSION RUNFILES:
+--------------------------------------------------------------------------------
+nqtest_rrf.res (RRF)                  COMPLETE    56M     Dec 24
+nqtest_wrrf_rsd.res (W-RRF RSD)       COMPLETE    57M     Dec 24
+nqtest_wcombsum_rsd.res (WCombSUM)    COMPLETE    -       Dec 24
+
+
+================================================================================
+SECTION 3: RAG EVALUATION - QWEN3-4B-INSTRUCT (Default Prompt)
+================================================================================
+
+RETRIEVER           STATUS          PROGRESS    SHARDS   METRICS
+--------------------------------------------------------------------------------
+BM25                COMPLETE        3610/3610   37       YES
+SPLADE              COMPLETE        3610/3610   37       YES
+BM25-MonoT5         COMPLETE        3610/3610   37       YES
+BM25-TCT            COMPLETE        3610/3610   37       YES
+BM25-BGE-Reranker   COMPLETE        3610/3610   37       YES
+TCT-ColBERT         COMPLETE        3610/3610   37       YES
+BGE                 COMPLETE        3610/3610   37       YES
+--------------------------------------------------------------------------------
+RRF                 IN PROGRESS     -           -        -
+W-RRF (RSD)         IN PROGRESS     -           -        -
+WCombSUM (RSD)      IN PROGRESS     -           -        -
+
+Output: /mnt/rag/nqtest/<retriever>_k0to6/
+
+
+================================================================================
+SECTION 4: RAG EVALUATION - QWEN3-4B-INSTRUCT (Prompt Variant B)
+================================================================================
+
+RETRIEVER           STATUS          PROGRESS    SHARDS   METRICS
+--------------------------------------------------------------------------------
+BM25                COMPLETE        3610/3610   37       YES
+SPLADE              COMPLETE        3610/3610   37       YES
+BM25-MonoT5         COMPLETE        3610/3610   37       YES
+BM25-TCT            COMPLETE        3610/3610   37       YES
+BM25-BGE-Reranker   COMPLETE        3610/3610   37       YES
+TCT-ColBERT         COMPLETE        3610/3610   37       YES
+BGE                 COMPLETE        3610/3610   37       YES
+
+Output: /mnt/rag/nqtest_prompt_b/<retriever>_k0to6/
+
+
+================================================================================
+SECTION 5: RAG EVALUATION - LLAMA-3.3-70B-INSTRUCT (University Endpoint)
+================================================================================
+
+RETRIEVER           STATUS          PROGRESS    SHARDS   METRICS
+--------------------------------------------------------------------------------
+BM25                COMPLETE        3610/3610   37       YES
+SPLADE              COMPLETE        3610/3610   37       YES
+BM25-MonoT5         COMPLETE        3610/3610   37       YES
+BM25-TCT            COMPLETE        3610/3610   37       YES
+BM25-BGE-Reranker   COMPLETE        3610/3610   37       YES
+TCT-ColBERT         COMPLETE        3610/3610   37       YES
+BGE                 COMPLETE        3610/3610   37       YES
+
+Output: /mnt/rag/nqtest_llama70b/<retriever>_k0to6/
+
+
+================================================================================
+SECTION 6: CURRENT CLUSTER STATUS
+================================================================================
+
+RUNNING JOBS:
+--------------------------------------------------------------------------------
+rag-rrf-k0to6                      GPU LLM   Qwen RAG on RRF fusion
+rag-wrrf-rsd-k0to6                 GPU LLM   Qwen RAG on W-RRF RSD fusion
+rag-wcombsum-rsd-k0to6             GPU LLM   Qwen RAG on WCombSUM RSD fusion
+
+LLM DEPLOYMENTS:
+--------------------------------------------------------------------------------
+qwen3-4b-vllm                      0 replicas  CPU-based vLLM (scaled down)
+qwen3-4b-vllm-gpu                  2 replicas  GPU-based vLLM (serving fusion RAG)
+llama-3.3-70b-instruct             External    University API endpoint
+
+RESOURCE USAGE:
+--------------------------------------------------------------------------------
+GPUs: 2/2 used (Qwen GPU LLM serving 3 fusion RAG jobs)
+
+
+================================================================================
+SECTION 7: COMPLETED METRICS SUMMARY
+================================================================================
+
+------------------------------------------------------------------------------
+QWEN3-4B – DEFAULT PROMPT – EM (%) by shots
+------------------------------------------------------------------------------
+RETRIEVER              k0     k1     k2     k3     k4     k5     k6
+----------------------------------------------------------------------
+BM25                   12.2   15.3   19.0   20.6   22.0   22.8   23.8
+SPLADE                 12.1   25.2   28.8   31.2   31.8   33.2   33.7
+BM25-MonoT5            12.1   25.0   28.5   29.3   30.2   30.6   30.9
+BM25-TCT               12.0   19.5   23.0   25.1   26.4   26.6   27.6
+BM25-BGE-Reranker      12.1   31.4   33.0   33.4   32.9   33.1   33.2
+TCT-ColBERT            11.9   18.8   21.7   23.6   24.9   25.6   27.0
+BGE                    12.2   27.6   31.0   32.7   33.3   34.0   35.0
+
+------------------------------------------------------------------------------
+QWEN3-4B – DEFAULT PROMPT – F1 (%) by shots
+------------------------------------------------------------------------------
+RETRIEVER              k0     k1     k2     k3     k4     k5     k6
+----------------------------------------------------------------------
+BM25                   18.6   21.4   26.0   28.5   30.4   31.5   32.8
+SPLADE                 18.5   34.0   38.5   41.5   42.7   44.3   45.2
+BM25-MonoT5            18.5   33.8   38.8   40.1   41.2   41.4   42.0
+BM25-TCT               18.4   26.5   30.9   33.7   35.5   35.9   37.2
+BM25-BGE-Reranker      18.5   41.2   43.8   44.4   44.2   44.6   44.8
+TCT-ColBERT            18.3   25.7   29.2   31.8   33.4   34.3   36.1
+BGE                    18.6   37.2   41.3   43.6   44.4   45.5   46.7
+
+
+------------------------------------------------------------------------------
+QWEN3-4B – PROMPT VARIANT B – EM (%) by shots
+------------------------------------------------------------------------------
+RETRIEVER              k0     k1     k2     k3     k4     k5     k6
+----------------------------------------------------------------------
+BM25                   13.6   15.3   18.9   20.6   22.1   22.8   23.7
+SPLADE                 13.7   25.2   28.7   31.3   31.6   33.1   33.6
+BM25-MonoT5            13.7   25.0   28.5   29.3   30.2   30.4   31.2
+BM25-TCT               13.6   19.5   23.0   25.2   26.5   26.5   27.6
+BM25-BGE-Reranker      13.7   31.4   33.0   33.5   32.9   33.1   33.2
+TCT-ColBERT            13.6   18.8   21.6   23.6   25.1   25.6   27.0
+BGE                    13.7   27.5   30.9   32.7   33.2   34.0   35.0
+
+------------------------------------------------------------------------------
+QWEN3-4B – PROMPT VARIANT B – F1 (%) by shots
+------------------------------------------------------------------------------
+RETRIEVER              k0     k1     k2     k3     k4     k5     k6
+----------------------------------------------------------------------
+BM25                   22.2   21.4   26.0   28.4   30.4   31.6   32.9
+SPLADE                 22.2   33.9   38.4   41.5   42.6   44.3   45.1
+BM25-MonoT5            22.3   33.8   38.7   40.1   41.2   41.3   42.2
+BM25-TCT               22.3   26.4   30.9   33.7   35.5   35.8   37.2
+BM25-BGE-Reranker      22.3   41.3   43.8   44.5   44.3   44.6   44.7
+TCT-ColBERT            22.1   25.7   29.1   31.8   33.5   34.3   36.0
+BGE                    22.2   37.2   41.3   43.7   44.2   45.4   46.6
+
+
+------------------------------------------------------------------------------
+LLAMA-3.3-70B – EM (%) by shots
+------------------------------------------------------------------------------
+RETRIEVER              k0     k1     k2     k3     k4     k5     k6
+----------------------------------------------------------------------
+BM25                   34.9   17.0   20.4   23.2   25.4   26.8   28.0
+SPLADE                 34.7   27.3   31.9   35.3   35.9   36.7   37.3
+BM25-MonoT5            34.8   27.2   31.0   33.3   33.8   34.7   34.9
+BM25-TCT               34.7   21.4   25.2   28.7   30.6   31.4   32.5
+BM25-BGE-Reranker      34.7   33.2   36.0   37.1   37.1   37.8   37.8
+TCT-ColBERT            34.8   20.6   23.7   27.3   28.7   29.8   31.2
+BGE                    34.7   30.1   34.3   36.9   38.2   38.8   39.5
+
+------------------------------------------------------------------------------
+LLAMA-3.3-70B – F1 (%) by shots
+------------------------------------------------------------------------------
+RETRIEVER              k0     k1     k2     k3     k4     k5     k6
+----------------------------------------------------------------------
+BM25                   46.9   23.1   27.9   31.5   34.2   36.2   37.4
+SPLADE                 46.8   36.3   42.0   46.0   47.4   48.6   49.3
+BM25-MonoT5            46.8   36.0   41.2   43.9   44.8   45.9   46.4
+BM25-TCT               46.8   27.9   33.0   37.3   39.8   41.1   42.4
+BM25-BGE-Reranker      46.8   43.4   47.2   48.4   48.8   49.6   49.6
+TCT-ColBERT            46.9   27.1   31.3   35.9   37.7   39.2   40.9
+BGE                    46.8   39.4   44.8   48.0   49.6   50.5   51.3
+
+
+================================================================================
+SECTION 8: KEY FINDINGS
+================================================================================
+
+1. ZERO-SHOT PERFORMANCE:
+   - Llama-70B is ~3x stronger than Qwen at k=0 (≈35% vs ≈12% EM)
+   - Prompt Variant B slightly improves Qwen k=0 (≈13.6% vs ≈12.1%)
+
+2. BEST RETRIEVERS AT k=6:
+   - Qwen (Default): BGE (35.0% EM, 46.7% F1)
+   - Qwen (Prompt B): BGE (35.0% EM, 46.6% F1) - nearly identical
+   - Llama-70B: BGE (39.5% EM, 51.3% F1) - best overall
+
+3. LLAMA VS QWEN AT k=6:
+   - Llama leads by ~4.5% EM across most retrievers
+   - Gap persists but narrows compared to k=0
+
+4. PROMPT VARIANT B EFFECT:
+   - Marginal improvement at k=0 (+1.5% EM for Qwen)
+   - Negligible difference at k≥1 (context dominates)
+
+5. RERANKING EFFECTIVENESS:
+   - BM25-BGE-Reranker provides strong gains for both models
+   - Second-best retriever for Qwen, best for Llama at k≥1
+
+6. FUSION (PENDING):
+   - RRF, W-RRF (RSD), WCombSUM (RSD) RAG evaluation in progress
+   - Expected to show whether QPP-weighted fusion improves over single retrievers
+
+
+================================================================================
+SECTION 9: QPP & FUSION FILES
+================================================================================
+
+QPP FILES (/mnt/index/dpr/qpp/):
+--------------------------------------------------------------------------------
+BGE_nqtest_all.res.mmnorm.qpp              495KB   Dec 24
+BM25_nqtest_all.res.mmnorm.qpp             495KB   Dec 24
+BM25_BGE_Reranker_nqtest_all.res.mmnorm.qpp 495KB   Dec 24
+BM25_MonoT5_nqtest_all.res.mmnorm.qpp      495KB   Dec 24
+BM25_TCT_nqtest_all.res.mmnorm.qpp         495KB   Dec 24
+SPLADE_nqtest_all.res.mmnorm.qpp           495KB   Dec 24
+TCTColBERT_nqtest_all.res.mmnorm.qpp       495KB   Dec 24
+
+FUSION RUNFILES (/mnt/index/dpr/fusion/):
+--------------------------------------------------------------------------------
+rrf/nqtest_rrf.res                         56MB    Dec 24
+wrrf_rsd/nqtest_wrrf_rsd.res               57MB    Dec 24
+wcombsum_rsd/nqtest_wcombsum_rsd.res       -       Dec 24
+
+
+================================================================================
+                              END OF STATUS SHEET
+================================================================================

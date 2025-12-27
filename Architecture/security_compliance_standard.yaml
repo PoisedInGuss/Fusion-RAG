@@ -1,0 +1,28 @@
+# Incoming: ./Architecture/module_structure_standard.yaml --- {Dict, YAML}
+# Processing: codify security baseline --- {1 job: governance}
+# Outgoing: ./Architecture/security_compliance_standard.yaml consumers --- {Dict, YAML}
+version: "1.0.0"
+controls:
+  secrets:
+    - "All Kubernetes secrets referenced by jobs must be mounted read-only and namespaced."
+    - "Never bake API tokens into Docker images; inject via OpenShift secrets or Vault."
+  network:
+    - "LLM endpoints must stay inside namespace; expose only ClusterIP services."
+    - "Disallow egress to public internet from retriever and rag pods unless explicitly whitelisted."
+  data:
+    - "Shared PVCs are scoped per module; prohibit cross-module write access."
+    - "Encrypt corpora at rest before long-term archival."
+  auditing:
+    - "Log every RAG job invocation with dataset, runfile, retriever, and timestamp."
+    - "Persist QA metrics for traceability."
+attestations:
+  build:
+    - "Images rebuilt when config, src, or scripts change."
+  deploy:
+    - "Jobs must cite the exact image digest in change logs."
+incident_response:
+  steps:
+    - "Quarantine offending pod (oc delete pod <name>)."
+    - "Rotate credentials referenced by compromised module."
+    - "Re-run validation scripts on affected PVCs."
+

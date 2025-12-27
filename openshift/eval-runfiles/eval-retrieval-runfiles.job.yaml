@@ -1,0 +1,211 @@
+# Incoming: shared-datasets (nq_test.json, psgs_w100.tsv), shared-indexes (runfiles) --- {json,tsv,TREC runfiles}
+# Processing: IR evaluation with ir_measures (nDCG, RR, AP, R@k) --- {build qrels from title match, evaluate}
+# Outgoing: stdout metrics --- {console output}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eval-retrieval-runfiles
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: eval
+        image: image-registry.openshift-image-registry.svc:5000/425krish/rag-runner:latest
+        imagePullPolicy: Always
+        workingDir: /app
+        env:
+        - name: HOME
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: SRC_SKIP_PACKAGE_IMPORTS
+          value: "0"
+        - name: SRC_SKIP_IR_EVAL
+          value: "0"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -euo pipefail
+          echo "[eval] Starting IR evaluation with ir_measures..."
+          
+          # Install ir_measures if not present
+          pip install --quiet ir_measures 2>/dev/null || true
+          
+          python3 << 'PYEOF'
+          import json
+          import sys
+          from collections import defaultdict
+          from pathlib import Path
+          
+          # Try ir_measures
+          try:
+              import ir_measures
+              from ir_measures import nDCG, RR, R, P, AP
+              HAS_IR_MEASURES = True
+              print("[eval] ir_measures available")
+          except ImportError:
+              HAS_IR_MEASURES = False
+              print("[eval] ir_measures not available, using manual computation")
+          
+          NQ_PATH = Path("/mnt/datasets/dpr/nq_test.json")
+          TSV_PATH = Path("/mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv")
+          RUNS_DIR = Path("/mnt/index/dpr/runs")
+          
+          # Load NQ test data
+          print(f"[eval] Loading queries from {NQ_PATH}...")
+          with NQ_PATH.open("r", encoding="utf-8") as f:
+              data = json.load(f)
+          
+          queries = {}  # qid -> {question, title, answers}
+          for ex in data.get("data", []):
+              qid = str(ex.get("example_id", ""))
+              if not qid or qid == "None":
+                  continue
+              queries[qid] = {
+                  "question": ex.get("question", ""),
+                  "title": ex.get("title", "").lower().strip(),
+                  "answers": [a.lower().strip() for a in ex.get("short_answers", []) if a]
+              }
+          
+          print(f"[eval] Loaded {len(queries)} queries")
+          
+          # Build title -> docids mapping from corpus
+          print(f"[eval] Building title index from {TSV_PATH}...")
+          title_to_docids = defaultdict(list)
+          docid_to_text = {}
+          
+          with TSV_PATH.open("r", encoding="utf-8", errors="ignore") as f:
+              f.readline()  # skip header
+              for line in f:
+                  parts = line.rstrip("\n").split("\t")
+                  if len(parts) >= 3:
+                      docid, text, title = parts[0], parts[1], parts[2]
+                      title_norm = title.lower().strip()
+                      title_to_docids[title_norm].append(docid)
+                      docid_to_text[docid] = (title + " " + text).lower()
+          
+          print(f"[eval] Indexed {len(docid_to_text):,} documents, {len(title_to_docids):,} unique titles")
+          
+          # Build qrels: qid -> {docid: relevance}
+          print("[eval] Building qrels from title matching...")
+          qrels = {}
+          for qid, q in queries.items():
+              gold_title = q["title"]
+              if gold_title in title_to_docids:
+                  qrels[qid] = {docid: 1 for docid in title_to_docids[gold_title]}
+          
+          print(f"[eval] Created qrels for {len(qrels)} queries (title match)")
+          
+          # Load and evaluate runs
+          def load_run(path):
+              """Load TREC run file."""
+              run = defaultdict(dict)
+              with open(path, "r", encoding="utf-8") as f:
+                  for line in f:
+                      parts = line.strip().split()
+                      if len(parts) >= 6:
+                          qid, _, docno, rank, score, _ = parts[:6]
+                          run[qid][docno] = float(score)
+              return dict(run)
+          
+          def eval_manual(run, qrels, k_values=[1, 5, 10, 20, 100]):
+              """Manual evaluation if ir_measures not available."""
+              results = {f"R@{k}": 0 for k in k_values}
+              results["MRR"] = 0.0
+              n = 0
+              
+              for qid, docs in run.items():
+                  if qid not in qrels:
+                      continue
+                  n += 1
+                  gold_docs = set(qrels[qid].keys())
+                  
+                  # Sort by score desc
+                  sorted_docs = sorted(docs.items(), key=lambda x: x[1], reverse=True)
+                  
+                  # MRR
+                  for rank, (docid, _) in enumerate(sorted_docs, 1):
+                      if docid in gold_docs:
+                          results["MRR"] += 1.0 / rank
+                          break
+                  
+                  # Recall@k
+                  for k in k_values:
+                      top_k = set(d for d, _ in sorted_docs[:k])
+                      if gold_docs & top_k:
+                          results[f"R@{k}"] += 1
+              
+              if n > 0:
+                  for key in results:
+                      results[key] /= n
+                  # Convert R@k to percentage
+                  for k in k_values:
+                      results[f"R@{k}"] *= 100
+              
+              return results, n
+          
+          def eval_ir_measures(run, qrels):
+              """Evaluate with ir_measures."""
+              metrics = [
+                  nDCG@10, nDCG@20, nDCG@100,
+                  RR@10, RR@100,
+                  R@1, R@5, R@10, R@20, R@100,
+                  AP@100
+              ]
+              result = ir_measures.calc_aggregate(metrics, qrels, run)
+              return {str(k): float(v) for k, v in result.items()}
+          
+          # Find and evaluate all runfiles
+          runfiles = sorted(RUNS_DIR.glob("*.res"))
+          print(f"\n[eval] Found {len(runfiles)} runfiles")
+          
+          print()
+          print("=" * 110)
+          if HAS_IR_MEASURES:
+              print(f"{'Method':<28} {'nDCG@10':>9} {'nDCG@100':>9} {'RR@10':>9} {'R@1':>8} {'R@5':>8} {'R@10':>8} {'R@100':>8} {'AP@100':>9}")
+          else:
+              print(f"{'Method':<28} {'R@1':>8} {'R@5':>8} {'R@10':>8} {'R@20':>8} {'R@100':>8} {'MRR':>10}")
+          print("=" * 110)
+          
+          for path in runfiles:
+              name = path.stem
+              try:
+                  run = load_run(str(path))
+                  
+                  if HAS_IR_MEASURES:
+                      scores = eval_ir_measures(run, qrels)
+                      print(f"{name:<28} {scores.get('nDCG@10', 0):>8.4f} {scores.get('nDCG@100', 0):>9.4f} {scores.get('RR@10', 0):>9.4f} {scores.get('R@1', 0)*100:>7.2f}% {scores.get('R@5', 0)*100:>7.2f}% {scores.get('R@10', 0)*100:>7.2f}% {scores.get('R@100', 0)*100:>7.2f}% {scores.get('AP@100', 0):>9.4f}")
+                  else:
+                      scores, n = eval_manual(run, qrels)
+                      print(f"{name:<28} {scores['R@1']:>7.2f}% {scores['R@5']:>7.2f}% {scores['R@10']:>7.2f}% {scores['R@20']:>7.2f}% {scores['R@100']:>7.2f}% {scores['MRR']:>10.4f}")
+              except Exception as e:
+                  print(f"{name:<28} ERROR: {e}")
+          
+          print("=" * 110)
+          print(f"\n[eval] Qrels based on title matching ({len(qrels)} queries with gold passages)")
+          PYEOF
+          
+          echo "[eval] DONE"
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+          limits:
+            cpu: "8"
+            memory: "32Gi"
+        volumeMounts:
+        - name: datasets
+          mountPath: /mnt/datasets
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: datasets
+        persistentVolumeClaim:
+          claimName: shared-datasets
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes

@@ -1,0 +1,7 @@
+{
+  "needed": 4823,
+  "found": 4823,
+  "max_k": 6,
+  "run_path": "/mnt/index/dpr/fusion/wrrf_rsd/nqtest_wrrf_rsd.res",
+  "tsv_path": "/mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv"
+}

@@ -1,0 +1,236 @@
+# Incoming: storage-datasets PVC & DPR TSV --- {tsv,int}
+# Processing: SPLADE encode + Lucene impact build --- {3 jobs: encoding, indexing, transformation}
+# Outgoing: storage-indexes PVC --- {Lucene impact index, jsonl shards}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpr-splade-index-ceph
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: splade
+        image: image-registry.openshift-image-registry.svc:5000/425krish/splade-cu121:latest
+        imagePullPolicy: Always
+        command: ["/bin/bash", "-lc"]
+        workingDir: /tmp
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: HF_HOME
+          value: /mnt/index/dpr/splade/hf_cache
+        - name: TORCH_HOME
+          value: /mnt/index/dpr/splade/torch_cache
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        - name: SPLADE_MODEL
+          value: naver/splade-cocondenser-ensembledistil
+        - name: TSV_PATH
+          value: /mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv
+        - name: ENCODED_DIR
+          value: /mnt/index/dpr/splade/encoded
+        - name: INDEX_DIR
+          value: /mnt/index/dpr/splade/index
+        - name: BATCH_SIZE
+          value: "16"
+        - name: MAX_LEN
+          value: "192"
+        - name: THREADS
+          value: "16"
+        - name: SHARD_DOCS
+          value: "200000"
+        args:
+        - |
+          set -euo pipefail
+          echo "[splade] starting on $(hostname)"
+          echo "[splade] TSV: ${TSV_PATH}"
+          echo "[splade] encoded dir: ${ENCODED_DIR}"
+          echo "[splade] index dir: ${INDEX_DIR}"
+
+          mkdir -p "${ENCODED_DIR}" "${INDEX_DIR}" "${HF_HOME}" "${TORCH_HOME}"
+
+          if [ -f "${INDEX_DIR}/segments.gen" ] || ls "${INDEX_DIR}"/segments_* >/dev/null 2>&1; then
+            echo "[splade] index already exists, exiting"
+            exit 0
+          fi
+
+          if [ ! -f "${ENCODED_DIR}/_ENCODE_DONE" ]; then
+            cat > /tmp/encode_splade_dpr.py <<'PY'
+          import os
+          import json
+          import time
+          from pathlib import Path
+
+          import numpy as np
+          import torch
+          from transformers import AutoModelForMaskedLM, AutoTokenizer
+
+          TSV_PATH = Path(os.environ["TSV_PATH"])
+          OUT_DIR = Path(os.environ["ENCODED_DIR"])
+          MODEL_NAME = os.environ.get("SPLADE_MODEL", "naver/splade-cocondenser-ensembledistil")
+          BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "16"))
+          MAX_LEN = int(os.environ.get("MAX_LEN", "192"))
+          SHARD_DOCS = int(os.environ.get("SHARD_DOCS", "200000"))
+
+          device = "cuda" if torch.cuda.is_available() else "cpu"
+          print(f"[encode] device={device}")
+          print(f"[encode] model={MODEL_NAME}")
+
+          if not TSV_PATH.exists():
+              raise FileNotFoundError(f"TSV not found: {TSV_PATH}")
+          OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+          tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, clean_up_tokenization_spaces=True)
+          model = AutoModelForMaskedLM.from_pretrained(MODEL_NAME).to(device)
+          model.eval()
+
+          reverse_vocab = {v: k for k, v in tokenizer.vocab.items()}
+          special_tokens = set(tokenizer.all_special_tokens)
+
+          WEIGHT_RANGE = 5.0
+          QUANT_RANGE = 256.0
+          MIN_IMPACT = 1
+          MAX_IMPACT = 255
+
+          @torch.no_grad()
+          def encode_batch(texts: list[str]) -> list[dict[str, int]]:
+              inputs = tokenizer(
+                  texts,
+                  max_length=MAX_LEN,
+                  padding="longest",
+                  truncation=True,
+                  add_special_tokens=True,
+                  return_tensors="pt",
+              ).to(device)
+              attention = inputs["attention_mask"]
+              logits = model(inputs["input_ids"]).logits
+              agg, _ = torch.max(torch.log1p(torch.relu(logits)) * attention.unsqueeze(-1), dim=1)
+              agg = agg.detach().cpu().numpy()
+
+              vectors: list[dict[str, int]] = []
+              for row in agg:
+                  cols = np.nonzero(row)[0]
+                  weights = row[cols]
+                  vec: dict[str, int] = {}
+                  for tid, w in zip(cols.tolist(), weights.tolist()):
+                      tok = reverse_vocab.get(int(tid))
+                      if not tok or tok in special_tokens:
+                          continue
+                      q = int(round((float(w) / WEIGHT_RANGE) * QUANT_RANGE))
+                      if q < MIN_IMPACT:
+                          continue
+                      if q > MAX_IMPACT:
+                          q = MAX_IMPACT
+                      vec[tok] = q
+                  vectors.append(vec)
+              return vectors
+
+          def shard_path(idx: int) -> Path:
+              return OUT_DIR / f"shard_{idx:05d}.jsonl"
+
+          print("[encode] streaming DPR TSV...")
+          start = time.time()
+          shard_idx = 0
+          docs_in_shard = 0
+          written = 0
+          out_f = shard_path(shard_idx).open("w", encoding="utf-8")
+
+          batch_ids: list[str] = []
+          batch_texts: list[str] = []
+
+          with TSV_PATH.open("r", encoding="utf-8", errors="ignore") as f:
+              header = f.readline().rstrip("\n").split("\t")
+              if len(header) < 3 or header[0] != "id":
+                  print("[encode] WARNING header:", header)
+
+              for line_no, line in enumerate(f, 2):
+                  parts = line.rstrip("\n").split("\t")
+                  if len(parts) < 3:
+                      continue
+                  docid, text, title = parts[0], parts[1], parts[2]
+                  combined = (title + "\n" + text).strip() if title else text.strip()
+                  if not combined:
+                      continue
+
+                  batch_ids.append(str(docid))
+                  batch_texts.append(combined)
+
+                  if len(batch_texts) >= BATCH_SIZE:
+                      vecs = encode_batch(batch_texts)
+                      for did, vec in zip(batch_ids, vecs):
+                          out_f.write(json.dumps({"id": did, "vector": vec}, ensure_ascii=False) + "\n")
+                          written += 1
+                          docs_in_shard += 1
+                          if docs_in_shard >= SHARD_DOCS:
+                              out_f.close()
+                              shard_idx += 1
+                              docs_in_shard = 0
+                              out_f = shard_path(shard_idx).open("w", encoding="utf-8")
+                      batch_ids.clear()
+                      batch_texts.clear()
+
+                      if written % 50000 == 0:
+                          elapsed = time.time() - start
+                          rate = written / elapsed if elapsed > 0 else 0
+                          print(f"[encode] {written:,} docs | {elapsed/60:.1f} min | {rate:.1f} docs/s")
+
+          if batch_texts:
+              vecs = encode_batch(batch_texts)
+              for did, vec in zip(batch_ids, vecs):
+                  out_f.write(json.dumps({"id": did, "vector": vec}, ensure_ascii=False) + "\n")
+                  written += 1
+
+          out_f.close()
+
+          (OUT_DIR / "_ENCODE_DONE").write_text(
+              json.dumps({"docs_written": written, "shard_docs": SHARD_DOCS}) + "\n",
+              encoding="utf-8",
+          )
+          print(f"[encode] DONE: {written:,} docs across {shard_idx+1} shard files")
+          PY
+            python3 /tmp/encode_splade_dpr.py
+          else
+            echo "[splade] encoding already done"
+          fi
+
+          echo "[splade] building Lucene impact index..."
+          python3 -m pyserini.index.lucene \
+            --collection JsonVectorCollection \
+            --input "${ENCODED_DIR}" \
+            --index "${INDEX_DIR}" \
+            --generator DefaultLuceneDocumentGenerator \
+            --threads "${THREADS}" \
+            --impact \
+            --pretokenized \
+            --optimize
+
+          echo "[splade] DONE"
+        resources:
+          requests:
+            cpu: "4"
+            memory: "32Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "8"
+            memory: "64Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: datasets
+          mountPath: /mnt/datasets
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: datasets
+        persistentVolumeClaim:
+          claimName: shared-datasets
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes

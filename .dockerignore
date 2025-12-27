@@ -1,0 +1,10 @@
+data/
+ Architecture/
+ .git/
+ __pycache__/
+ .venv/
+ venv/
+ .mypy_cache/
+ .pytest_cache/
+ .cursor/
+ terminals/

@@ -1,0 +1,54 @@
+# Incoming: ./Architecture/OKD4_CLI_RUNBOOK.md --- {Dict, Markdown}
+# Processing: codify data-flow governance --- {1 job: governance}
+# Outgoing: ./Architecture/data_flow_standard.yaml consumers --- {Dict, YAML}
+version: "1.0.0"
+source_of_truth: "./Architecture/data_flow_standard.yaml"
+job_types:
+  - name: ingestion
+    description: "Acquire data from external stores or services without mutation."
+  - name: validation
+    description: "Assert schema, bounds, and trust on inbound artifacts before use."
+  - name: transformation
+    description: "Change structure or semantics of payloads without altering intent."
+  - name: routing
+    description: "Move validated payloads across modules or infrastructure boundaries."
+  - name: aggregation
+    description: "Summarize or combine multiple payloads into derived artifacts."
+  - name: generation
+    description: "Produce model-driven outputs (LLM, embedding, scoring) from curated context."
+  - name: evaluation
+    description: "Score generated artifacts against gold references or heuristics."
+  - name: governance
+    description: "Define standards, policies, and invariants enforced across modules."
+data_types:
+  - name: Dict
+    description: "Python dictionaries or JSON objects."
+  - name: List
+    description: "Ordered sequences of homogeneous records."
+  - name: AsyncGenerator
+    description: "Streaming iterators emitting records under back-pressure."
+  - name: Image
+    description: "Binary tensor payloads representing model checkpoints or media."
+formats:
+  - name: JSON
+    description: "UTF-8 encoded JavaScript Object Notation."
+  - name: YAML
+    description: "YAML 1.3 compliant configuration."
+  - name: TSV
+    description: "Tab-separated UTF-8 text."
+  - name: TREC
+    description: "Six-column whitespace-delimited ranking output."
+example_format:
+  description: "Three-line header enforced on every source file."
+  template:
+    - "Incoming: <source refs> --- {<data_type>, <format>}"
+    - "Processing: <operations summary> --- {<N> jobs: <job_types>}"
+    - "Outgoing: <dest refs> --- {<data_type>, <format>}"
+  notes:
+    - "Source refs must be file paths, modules, or call sites."
+    - "Job types must reference the names listed above."
+    - "Use 'none' when a section does not apply."
+validation:
+  required: true
+  failure_mode: "reject PR or deployment when headers deviate from template."
+

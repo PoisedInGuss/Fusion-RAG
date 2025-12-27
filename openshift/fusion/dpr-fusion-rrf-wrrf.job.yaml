@@ -1,0 +1,87 @@
+# Incoming: shared-indexes/dpr (runs, qpp) --- {TREC runs, .mmnorm.qpp}
+# Processing: normalize + QPP + fusion --- {3 jobs: normalization,qpp,fusion}
+# Outgoing: shared-indexes/dpr/fusion --- {TREC fused runs, text}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpr-fusion-rrf-wrrf
+  namespace: 425krish
+  labels:
+    app: fusion
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: fusion
+        image: image-registry.openshift-image-registry.svc:5000/425krish/rag-runner:latest
+        imagePullPolicy: Always
+        workingDir: /app
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: SRC_SKIP_PACKAGE_IMPORTS
+          value: "0"
+        - name: SRC_SKIP_IR_EVAL
+          value: "0"
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          
+          RUNS_DIR=/mnt/index/dpr/runs
+          QPP_DIR=/mnt/index/dpr/qpp
+          FUSION_DIR=/mnt/index/dpr/fusion
+          
+          echo "[fusion] Ensuring directories exist..."
+          mkdir -p "${RUNS_DIR}" "${QPP_DIR}" "${FUSION_DIR}/rrf" "${FUSION_DIR}/wrrf_rsd"
+          
+          echo "[fusion] Normalizing .res files -> .norm.res (idempotent)..."
+          python scripts/utils/normalize_res.py --runs_dir "${RUNS_DIR}"
+          
+          echo "[fusion] Computing QPP scores (RSD default, minmax norm)..."
+          python scripts/03_qpp.py \
+            --runs_dir "${RUNS_DIR}" \
+            --qpp_dir "${QPP_DIR}" \
+            --top_k 100 \
+            --normalize minmax
+          
+          echo "[fusion] Running unweighted RRF..."
+          python scripts/05_fusion.py \
+            --method rrf \
+            --runs_dir "${RUNS_DIR}" \
+            --output "${FUSION_DIR}/rrf/nqtest_rrf.res" \
+            --rrf_k 60
+          
+          echo "[fusion] Running QPP-weighted RRF (RSD)..."
+          python scripts/05_fusion.py \
+            --method wrrf \
+            --runs_dir "${RUNS_DIR}" \
+            --qpp_dir "${QPP_DIR}" \
+            --qpp_model RSD \
+            --output "${FUSION_DIR}/wrrf_rsd/nqtest_wrrf_rsd.res" \
+            --rrf_k 60
+          
+          echo "[fusion] Listing fusion outputs:"
+          ls -lh "${FUSION_DIR}"/rrf "${FUSION_DIR}"/wrrf_rsd
+        resources:
+          requests:
+            cpu: "6"
+            memory: "32Gi"
+          limits:
+            cpu: "12"
+            memory: "48Gi"
+        volumeMounts:
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes
+

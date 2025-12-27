@@ -1,0 +1,20 @@
+{
+  "dataset": "nq_test",
+  "retriever": "RRF",
+  "rag_variant": "RRF_Llama70B_k0to6",
+  "run_path": "/mnt/index/dpr/fusion/rrf/nqtest_rrf.res",
+  "psgs_path": "/mnt/datasets/dpr/data/wikipedia_split/psgs_w100/psgs_w100.tsv",
+  "nq_path": "/mnt/datasets/dpr/nq_test.json",
+  "shots": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "model": "llama-3.3-70b-instruct",
+  "shard_size": 100,
+  "timestamp": "2025-12-25T15:14:47"
+}

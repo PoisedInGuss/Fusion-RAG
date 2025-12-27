@@ -1,0 +1,17 @@
+# Incoming: ./architecture/data_flow_standard.yaml --- {Dict, YAML}
+# Processing: define ClusterIP Service for GPU Qwen3 vLLM endpoint --- {1 job: routing}
+# Outgoing: OpenShift Service qwen3-4b-vllm-gpu --- {Dict, YAML}
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-4b-vllm-gpu
+  namespace: 425krish
+spec:
+  type: ClusterIP
+  selector:
+    app: qwen3-4b-vllm-gpu
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+

@@ -1,0 +1,36 @@
+# Incoming: ./architecture/data_flow_standard.yaml --- {Dict, YAML}
+# Processing: define binary BuildConfig + ImageStream for GPU vLLM CUDA 12.4 image --- {1 job: routing}
+# Outgoing: OpenShift BuildConfig vllm-cu124 + ImageStream --- {Dict, YAML}
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: vllm-cu124
+  namespace: 425krish
+  labels:
+    app: vllm-cu124
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: vllm-cu124
+  namespace: 425krish
+  labels:
+    build: vllm-cu124
+spec:
+  failedBuildsHistoryLimit: 5
+  successfulBuildsHistoryLimit: 5
+  runPolicy: Serial
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy: {}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: vllm-cu124:latest
+  resources: {}
+  nodeSelector: null
+  triggers: []
+

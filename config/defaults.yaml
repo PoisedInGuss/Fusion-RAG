@@ -1,0 +1,360 @@
+# =============================================================================
+# QPP-Fusion-RAG Configuration
+# =============================================================================
+# Single source of truth for ALL configurable values in the codebase.
+# Environment variable overrides: Use ${ENV_VAR} syntax or set QPP_* prefix vars.
+#
+# STRICT: No magic numbers in code. All constants defined here.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Paths
+# -----------------------------------------------------------------------------
+paths:
+  # Project-relative paths (${PROJECT_ROOT} expanded at runtime)
+  cache_root: "${PROJECT_ROOT}/cache"
+  data_root: "${PROJECT_ROOT}/data"
+  
+  # External dataset paths - override via BEIR_PATH env var
+  beir_datasets: "${BEIR_PATH:/Volumes/Disk-D/RAGit/data/beir/datasets}"
+
+# -----------------------------------------------------------------------------
+# Datasets
+# -----------------------------------------------------------------------------
+datasets:
+  supported:
+    - nq
+    - hotpotqa
+    - scifact
+  
+  nq:
+    name: "Natural Questions"
+    corpus_subdir: "BEIR-nq"
+    qrels_file: "qrels/test.tsv"
+    task_type: "qa"
+    gold_answers_file: "nq_gold_answers.json"
+  
+  hotpotqa:
+    name: "HotpotQA"
+    corpus_subdir: "BEIR-hotpotqa"
+    qrels_file: "qrels/test.tsv"
+    task_type: "qa"
+    gold_answers_file: "hotpotqa_gold_answers.json"
+  
+  scifact:
+    name: "SciFact"
+    corpus_subdir: "BEIR-scifact"
+    qrels_file: "qrels/test.tsv"
+    task_type: "fact_verification"
+    gold_answers_file: "scifact_gold_answers.json"
+    labels:
+      - "SUPPORT"
+      - "CONTRADICT"
+      - "NOT_ENOUGH_INFO"
+
+# -----------------------------------------------------------------------------
+# Index Registry (Pyserini pre-built indexes)
+# -----------------------------------------------------------------------------
+indexes:
+  pyserini:
+    bge:
+      name_template: "beir-v1.0.0-{dataset}.bge-base-en-v1.5"
+      encoder: "BAAI/bge-base-en-v1.5"
+      searcher_class: "FaissSearcher"
+      description: "BGE-base dense vectors"
+      # FAISS index directory hashes (Pyserini cache structure)
+      hashes:
+        nq: "faiss-flat.beir-v1.0.0-nq.bge-base-en-v1.5.20240107.b738bbbe7ca36532f25189b776d4e153"
+        hotpotqa: "faiss-flat.beir-v1.0.0-hotpotqa.bge-base-en-v1.5.20240107.d2c08665e8cd750bd06ceb7d23897c94"
+        scifact: "faiss-flat.beir-v1.0.0-scifact.bge-base-en-v1.5.20240107.248b6db6e61d18f17674219aecd8b41d"
+    
+    splade:
+      name_template: "beir-v1.0.0-{dataset}.splade-pp-ed"
+      encoder: "naver/splade-cocondenser-ensembledistil"
+      searcher_class: "LuceneImpactSearcher"
+      description: "SPLADE++ EnsembleDistil"
+    
+    contriever:
+      name_template: "beir-v1.0.0-{dataset}.contriever-msmarco"
+      encoder: "facebook/contriever-msmarco"
+      searcher_class: "FaissSearcher"
+      description: "Contriever-MSMARCO dense"
+    
+    bm25:
+      name_template: "beir-v1.0.0-{dataset}.flat"
+      encoder: null
+      searcher_class: "LuceneSearcher"
+      description: "Pyserini BM25"
+  
+  # HNSW index parameters
+  hnsw:
+    ef_construction: 200
+    M: 16
+    ef_search: 128
+    n_segments: 4
+    num_threads: 8
+
+# -----------------------------------------------------------------------------
+# Models
+# -----------------------------------------------------------------------------
+models:
+  # Dense retrieval encoders
+  bge:
+    name: "BAAI/bge-base-en-v1.5"
+    embedding_dim: 768
+  
+  tct_colbert:
+    name: "castorini/tct_colbert-v2-hnp-msmarco"
+    embedding_dim: 768
+  
+  cross_encoder:
+    name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  
+  # LM Studio configuration - override via LM_STUDIO_URL env var
+  lm_studio:
+    base_url: "${LM_STUDIO_URL:http://localhost:1234/v1}"
+    default_model: "qwen/qwen3-4b-2507"
+    embed_model: "text-embedding-bge-small-en-v1.5"
+    timeout_seconds: 60
+
+# -----------------------------------------------------------------------------
+# Processing Parameters
+# -----------------------------------------------------------------------------
+processing:
+  # Java/JVM settings
+  java:
+    heap_max: "6g"
+    heap_min: "2g"
+    tool_options: "-Xmx6g -Xms2g"
+  
+  # Threading (for M4/multi-core systems)
+  threads:
+    omp: 8
+    mkl: 8
+    faiss: 10
+    pyterrier_mem_mb: 6000
+  
+  # Batch sizes for different operations
+  batch_sizes:
+    # Encoding
+    tct_encoding: 64
+    bge_encoding: 64
+    cross_encoder: 256
+    
+    # Retrieval mini-batches (for checkpointing)
+    bge_mini: 100
+    tct_mini: 100
+    splade_mini: 500
+    bm25_tct_mini: 5
+    bm25_monot5_mini: 2
+  
+  # Default retrieval parameters
+  retrieval:
+    top_k: 100
+    first_stage_k: 100  # For two-stage retrievers
+
+# -----------------------------------------------------------------------------
+# QPP (Query Performance Prediction)
+# -----------------------------------------------------------------------------
+qpp:
+  # Number of QPP methods computed by Java bridge
+  n_methods: 13
+  
+  # Method names in order (matches Java QPPBridge output)
+  methods:
+    - nqc
+    - smv
+    - wig
+    - SigmaMax
+    - SigmaX
+    - RSD
+    - UEF
+    - MaxIDF
+    - avgidf
+    - cumnqc
+    - snqc
+    - dense-qpp
+    - dense-qpp-m
+  
+  # Index mapping: name -> index (for QPP-weighted fusion)
+  method_index:
+    SMV: 0
+    Sigma_max: 1
+    "Sigma(%)": 2
+    NQC: 3
+    UEF: 4
+    RSD: 5
+    QPP-PRP: 6
+    WIG: 7
+    SCNQC: 8
+    QV-NQC: 9
+    DM: 10
+    NQA-QPP: 11
+    BERTQPP: 12
+  
+  # Default QPP method for weighting
+  default_method: "RSD"
+  default_index: 5
+  
+  # Normalization
+  normalization: "minmax"  # Options: none, minmax, zscore
+
+# -----------------------------------------------------------------------------
+# Fusion
+# -----------------------------------------------------------------------------
+fusion:
+  # RRF constant
+  rrf_k: 60
+  
+  # Available methods
+  methods:
+    - combsum
+    - combmnz
+    - rrf
+    - wcombsum
+    - wcombmnz
+    - wrrf
+    - learned
+
+# -----------------------------------------------------------------------------
+# Evaluation
+# -----------------------------------------------------------------------------
+evaluation:
+  # IR metrics (via ir_measures)
+  ir_metrics:
+    - "nDCG@5"
+    - "nDCG@10"
+    - "nDCG@20"
+    - "RR@5"
+    - "RR@10"
+    - "R@5"
+    - "R@10"
+    - "R@100"
+    - "P@10"
+    - "AP"
+  
+  # QA metrics
+  qa_metrics:
+    - em
+    - f1
+    - containment
+    - semantic
+    - llm_judge
+  
+  # RAG evaluation k-shots
+  default_k_shots:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 10
+
+# -----------------------------------------------------------------------------
+# Training
+# -----------------------------------------------------------------------------
+training:
+  # Train/test split
+  train_ratio: 0.8
+  
+  # LightGBM defaults
+  lightgbm:
+    num_leaves: 31
+    learning_rate: 0.05
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 5
+    num_boost_round: 200
+    early_stopping_rounds: 20
+  
+  # MLP defaults
+  mlp:
+    hidden_sizes: [128, 64]
+    dropout: 0.2
+    learning_rate: 0.001
+    epochs: 100
+    batch_size: 64
+    patience: 15
+
+# -----------------------------------------------------------------------------
+# Generation (RAG)
+# -----------------------------------------------------------------------------
+generation:
+  temperature: 0.1
+  max_tokens: 256
+  
+  # Default system prompt (QA task)
+  system_prompt: |
+    You are a precise question answering assistant.
+    Answer the question using ONLY the provided context.
+    Your entire reply MUST be a single short answer span (a name, date, number, or short phrase).
+    Do NOT include explanations, justification, apologies, or any extra words.
+    If the answer is not in the context, reply with exactly: I cannot answer.
+  
+  # Task-specific prompts
+  prompts:
+    qa:
+      system: |
+        You are a precise question answering assistant.
+        Answer the question using ONLY the provided context.
+        Your entire reply MUST be a single short answer span (a name, date, number, or short phrase).
+        Do NOT include explanations, justification, apologies, or any extra words.
+        If the answer is not in the context, reply with exactly: I cannot answer.
+      user_template: |
+        Context:
+        {context}
+        
+        Question: {query}
+        
+        Answer (short span only, no explanation):
+    
+    qa_variant_b:
+      # Variant B: k=0 uses parametric knowledge, k≥1 uses context
+      system_k0: |
+        You are a precise question answering assistant.
+        Answer the question using your knowledge.
+        Your entire reply MUST be a single short answer span (a name, date, number, or short phrase).
+        Do NOT include explanations, justification, apologies, or any extra words.
+        If you don't know the answer, reply with exactly: I cannot answer.
+      system_kplus: |
+        You are a precise question answering assistant.
+        Answer the question using ONLY the provided context.
+        Your entire reply MUST be a single short answer span (a name, date, number, or short phrase).
+        Do NOT include explanations, justification, apologies, or any extra words.
+        If the answer is not in the context, reply with exactly: I cannot answer.
+      user_template_k0: |
+        Question: {query}
+        
+        Answer (short span only, no explanation):
+      user_template_kplus: |
+        Context:
+        {context}
+        
+        Question: {query}
+        
+        Answer (short span only, no explanation):
+    
+    fact_verification:
+      system: |
+        You are a scientific fact verification assistant.
+        Your task is to verify whether the given claim is supported or contradicted by the provided evidence.
+        
+        You MUST respond with EXACTLY one of these labels:
+        - SUPPORT: The evidence supports the claim
+        - CONTRADICT: The evidence contradicts the claim
+        - NOT_ENOUGH_INFO: The evidence neither supports nor contradicts the claim
+        
+        First provide a brief rationale (1-2 sentences), then state your final verdict on a new line starting with "Verdict:"
+      user_template: |
+        Evidence:
+        {context}
+        
+        Claim: {claim}
+        
+        Based on the evidence above, is this claim SUPPORT, CONTRADICT, or NOT_ENOUGH_INFO?
+      labels:
+        - SUPPORT
+        - CONTRADICT
+        - NOT_ENOUGH_INFO

@@ -1,0 +1,66 @@
+# Incoming: storage-llm PVC (RBD, RWO) --- {Filesystem}
+# Processing: llm cache copy --- {1 job: rsync-like directory copy}
+# Outgoing: shared-llm PVC (CephFS, RWX) --- {Filesystem}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-llm-to-cephfs
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: migrate
+        image: python:3.11-slim
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          echo "[migrate-llm] uid/gid: $(id)"
+          python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+
+          SRC = Path("/mnt/src")
+          DST = Path("/mnt/dst")
+          SKIP = {"lost+found"}
+
+          print(f"[migrate-llm] copying {SRC} -> {DST}")
+          if not SRC.exists():
+              print("[migrate-llm] WARNING: source missing, nothing to copy")
+          else:
+              DST.mkdir(parents=True, exist_ok=True)
+              for entry in SRC.iterdir():
+                  if entry.name in SKIP:
+                      print(f"[migrate-llm] skip {entry}")
+                      continue
+                  target = DST / entry.name
+                  if entry.is_dir():
+                      print(f"[migrate-llm] dir {entry} -> {target}")
+                      shutil.copytree(entry, target, symlinks=True)
+                  else:
+                      print(f"[migrate-llm] file {entry} -> {target}")
+                      shutil.copy2(entry, target)
+
+          print("[migrate-llm] copy complete")
+          PY
+          echo "[migrate-llm] du summary"
+          du -sh /mnt/src || true
+          du -sh /mnt/dst || true
+          echo "[migrate-llm] DONE"
+        volumeMounts:
+        - name: src
+          mountPath: /mnt/src
+        - name: dst
+          mountPath: /mnt/dst
+      volumes:
+      - name: src
+        persistentVolumeClaim:
+          claimName: storage-llm
+      - name: dst
+        persistentVolumeClaim:
+          claimName: shared-llm
+
