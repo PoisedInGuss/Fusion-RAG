@@ -1,0 +1,142 @@
+# Incoming: shared-indexes (BGE FAISS index), shared-datasets (nq_train.json) --- {faiss,json}
+# Processing: BGE dense retrieval on GPU --- {1 job: dense retrieval}
+# Outgoing: shared-indexes (runs/BGE_nqtrain_all.res) --- {trec}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bge-retrieve-nqtrain
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: bge
+        image: image-registry.openshift-image-registry.svc:5000/425krish/bge-cu121:latest
+        imagePullPolicy: Always
+        command: ["/bin/bash", "-lc"]
+        workingDir: /tmp
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: INDEX_DIR
+          value: /mnt/index/dpr/bge
+        - name: QUERIES_PATH
+          value: /mnt/datasets/nq/nq_train.json
+        - name: OUT_PATH
+          value: /mnt/index/dpr/runs/BGE_nqtrain_all.res
+        - name: MODEL_NAME
+          value: BAAI/bge-base-en-v1.5
+        - name: TOP_K
+          value: "1000"
+        - name: BATCH_SIZE
+          value: "64"
+        args:
+        - |
+          set -euo pipefail
+          echo "[bge-retrieve] starting on $(hostname)"
+          python3 - << 'PY'
+          import json
+          import os
+          from pathlib import Path
+          import numpy as np
+          import faiss
+          from sentence_transformers import SentenceTransformer
+
+          INDEX_DIR = Path(os.environ["INDEX_DIR"])
+          QUERIES_PATH = Path(os.environ["QUERIES_PATH"])
+          OUT_PATH = Path(os.environ["OUT_PATH"])
+          MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-base-en-v1.5")
+          TOP_K = int(os.environ.get("TOP_K", "1000"))
+          BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "64"))
+
+          index_path = INDEX_DIR / "index.ivfpq.faiss"
+          docids_path = INDEX_DIR / "docids.txt"
+
+          if not index_path.exists():
+              raise FileNotFoundError(f"Index not found: {index_path}")
+          if not docids_path.exists():
+              raise FileNotFoundError(f"Docids not found: {docids_path}")
+
+          print(f"[bge-retrieve] loading FAISS index from {index_path}")
+          index = faiss.read_index(str(index_path))
+          
+          print(f"[bge-retrieve] loading docids from {docids_path}")
+          with docids_path.open("r", encoding="utf-8") as f:
+              docids = [line.strip() for line in f]
+          
+          print(f"[bge-retrieve] loading model {MODEL_NAME}")
+          model = SentenceTransformer(MODEL_NAME, device="cuda")
+          
+          print(f"[bge-retrieve] loading queries from {QUERIES_PATH}")
+          with QUERIES_PATH.open("r", encoding="utf-8") as f:
+              data = json.load(f)
+          
+          queries = []
+          for ex in data.get("data", []):
+              qid = str(ex.get("example_id", ""))
+              question = (ex.get("question") or "").strip()
+              if qid and question:
+                  queries.append((qid, question))
+          
+          print(f"[bge-retrieve] {len(queries)} queries to process")
+          
+          OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+          with OUT_PATH.open("w", encoding="utf-8") as out_f:
+              for i in range(0, len(queries), BATCH_SIZE):
+                  batch = queries[i:i+BATCH_SIZE]
+                  qids = [q[0] for q in batch]
+                  questions = [q[1] for q in batch]
+                  
+                  embeddings = model.encode(
+                      questions,
+                      batch_size=BATCH_SIZE,
+                      convert_to_numpy=True,
+                      normalize_embeddings=True,
+                      show_progress_bar=False
+                  ).astype("float32")
+                  
+                  scores, indices = index.search(embeddings, TOP_K)
+                  
+                  for qid, score_row, idx_row in zip(qids, scores, indices):
+                      for rank, (score, idx) in enumerate(zip(score_row, idx_row), start=1):
+                          if idx >= 0 and idx < len(docids):
+                              docid = docids[idx]
+                              out_f.write(f"{qid} Q0 {docid} {rank} {score:.6f} BGE\n")
+                  
+                  if (i + BATCH_SIZE) % 1000 == 0:
+                      print(f"[bge-retrieve] {min(i+BATCH_SIZE, len(queries))}/{len(queries)} queries processed")
+          
+          print(f"[bge-retrieve] done, wrote {OUT_PATH}")
+          PY
+          echo "[bge-retrieve] DONE"
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "8"
+            memory: "32Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: datasets
+          mountPath: /mnt/datasets
+          readOnly: true
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: datasets
+        persistentVolumeClaim:
+          claimName: shared-datasets
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes

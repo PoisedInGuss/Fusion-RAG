@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rsync-uploader
+  namespace: 425krish
+spec:
+  restartPolicy: Never
+  containers:
+  - name: uploader
+    image: docker.io/alpine:latest
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      apk add --no-cache rsync
+      echo "[uploader] rsync installed, ready for upload"
+      sleep 3600
+    volumeMounts:
+    - name: datasets
+      mountPath: /mnt/datasets
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+  volumes:
+  - name: datasets
+    persistentVolumeClaim:
+      claimName: shared-datasets

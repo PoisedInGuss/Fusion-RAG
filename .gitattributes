@@ -3,3 +3,4 @@ data/dpr-nq/**/*.res filter=lfs diff=lfs merge=lfs -text
 data/dpr-nq/**/*.jsonl filter=lfs diff=lfs merge=lfs -text
 data/dpr-nq/**/*.json filter=lfs diff=lfs merge=lfs -text
 data/dpr-nq/**/*.qpp filter=lfs diff=lfs merge=lfs -text
+data/nq_train.json filter=lfs diff=lfs merge=lfs -text

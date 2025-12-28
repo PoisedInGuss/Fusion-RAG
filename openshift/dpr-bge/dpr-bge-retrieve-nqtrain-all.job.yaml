@@ -1,0 +1,164 @@
+# Incoming: shared-datasets (nq_train.json), shared-indexes (BGE HNSW index) --- {Dict,str}
+# Processing: BGE dense retrieval over HNSW --- {1 job: encoder + HNSW search}
+# Outgoing: shared-indexes (BGE_nqtrain_all.res) --- {TREC runfile,str}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpr-bge-retrieve-nqtrain-all
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: bge-retrieve
+        image: image-registry.openshift-image-registry.svc:5000/425krish/bge-cu121:latest
+        imagePullPolicy: Always
+        command: ["/bin/bash", "-lc"]
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: NQ_PATH
+          value: /mnt/datasets/dpr/nq_train.json
+        - name: INDEX_PATH
+          value: /mnt/index/dpr/bge/index.hnsw.faiss
+        - name: DOCIDS_PATH
+          value: /mnt/index/dpr/bge/docids.txt
+        - name: RUN_PATH
+          value: /mnt/index/dpr/runs/BGE_nqtrain_all.res
+        - name: MODEL_NAME
+          value: BAAI/bge-base-en-v1.5
+        - name: BATCH_SIZE
+          value: "128"
+        - name: TOP_K
+          value: "100"
+        - name: HNSW_EF_SEARCH
+          value: "128"
+        args:
+        - |
+          set -euo pipefail
+          echo "[bge-retrieve] RESEARCH-GRADE HNSW RETRIEVAL"
+          echo "[bge-retrieve] nq_train=${NQ_PATH}"
+          echo "[bge-retrieve] index=${INDEX_PATH}"
+          python3 - << 'PY'
+          import json
+          import os
+          import time
+          from pathlib import Path
+          
+          import numpy as np
+          import faiss
+          from sentence_transformers import SentenceTransformer
+          
+          NQ_PATH = Path(os.environ["NQ_PATH"])
+          INDEX_PATH = Path(os.environ["INDEX_PATH"])
+          DOCIDS_PATH = Path(os.environ["DOCIDS_PATH"])
+          RUN_PATH = Path(os.environ["RUN_PATH"])
+          MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-base-en-v1.5")
+          BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "128"))
+          TOP_K = int(os.environ.get("TOP_K", "100"))
+          HNSW_EF_SEARCH = int(os.environ.get("HNSW_EF_SEARCH", "128"))
+          
+          print(f"[bge-retrieve] loading nq_train from {NQ_PATH}...")
+          data = json.loads(NQ_PATH.read_text(encoding="utf-8"))
+          items = data.get("data", [])
+          qids = []
+          texts = []
+          for ex in items:
+              q = (ex.get("question") or "").strip()
+              if not q:
+                  continue
+              qid = str(ex.get("example_id"))
+              if qid == "None":
+                  continue
+              qids.append(qid)
+              texts.append(q)
+          
+          print(f"[bge-retrieve] queries={len(qids)}")
+          
+          print(f"[bge-retrieve] loading HNSW index from {INDEX_PATH}...")
+          index = faiss.read_index(str(INDEX_PATH))
+          index.hnsw.efSearch = HNSW_EF_SEARCH
+          print(f"[bge-retrieve] HNSW efSearch={HNSW_EF_SEARCH} (research-grade)")
+          
+          print(f"[bge-retrieve] loading docids from {DOCIDS_PATH}...")
+          docids = [line.strip() for line in DOCIDS_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
+          if len(docids) != index.ntotal:
+              print(f"[bge-retrieve] WARNING: docids({len(docids)}) != index.ntotal({index.ntotal})")
+          
+          print(f"[bge-retrieve] loading encoder {MODEL_NAME} on GPU if available...")
+          device = "cuda"
+          try:
+              import torch
+              if not torch.cuda.is_available():
+                  device = "cpu"
+          except Exception:
+              device = "cpu"
+          print(f"[bge-retrieve] device={device}")
+          model = SentenceTransformer(MODEL_NAME, device=device)
+          
+          RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
+          tmp_path = RUN_PATH.with_suffix(".part")
+          if tmp_path.exists():
+              tmp_path.unlink()
+          
+          def batched(iterable, n):
+              for i in range(0, len(iterable), n):
+                  yield i, iterable[i:i+n]
+          
+          total_start = time.time()
+          with tmp_path.open("w", encoding="utf-8") as out_f:
+              for start, batch_q in batched(list(zip(qids, texts)), BATCH_SIZE):
+                  b_qids = [q for q, _ in batch_q]
+                  b_texts = [t for _, t in batch_q]
+                  embs = model.encode(
+                      b_texts,
+                      batch_size=BATCH_SIZE,
+                      convert_to_numpy=True,
+                      normalize_embeddings=True,
+                      show_progress_bar=False,
+                  ).astype("float32")
+                  scores, ids = index.search(embs, TOP_K)
+                  for i, qid in enumerate(b_qids):
+                      for rank, (idx, score) in enumerate(zip(ids[i], scores[i]), start=1):
+                          if idx < 0 or idx >= len(docids):
+                              continue
+                          docno = docids[idx]
+                          out_f.write(f"{qid} Q0 {docno} {rank} {float(score):.6f} BGE\n")
+                  if (start + len(batch_q)) % (BATCH_SIZE * 5) == 0:
+                      print(f"[bge-retrieve] processed {start + len(batch_q)}/{len(qids)} queries")
+          
+          tmp_path.replace(RUN_PATH)
+          total_time = time.time() - total_start
+          print(f"[bge-retrieve] total time: {total_time:.1f}s ({total_time/60:.1f}min)")
+          print(f"[bge-retrieve] avg latency: {total_time/len(qids)*1000:.1f}ms/query")
+          print(f"[bge-retrieve] wrote runfile to {RUN_PATH}")
+          PY
+          echo "[bge-retrieve] DONE"
+        resources:
+          requests:
+            cpu: "8"
+            memory: "100Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "16"
+            memory: "130Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: datasets
+          mountPath: /mnt/datasets
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: datasets
+        persistentVolumeClaim:
+          claimName: shared-datasets
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes

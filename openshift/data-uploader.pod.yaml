@@ -1,0 +1,35 @@
+# Incoming: shared-datasets (nq_train.json) --- {Dict,str}
+# Processing: temporary pod for data upload --- {1 job: file transfer}
+# Outgoing: shared-datasets PVC --- {json}
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: data-uploader
+  namespace: 425krish
+spec:
+  restartPolicy: Never
+  containers:
+  - name: uploader
+    image: docker.io/alpine:latest
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      echo "[uploader] ready for file transfer"
+      echo "[uploader] target: /mnt/datasets/nq/"
+      sleep 3600
+    volumeMounts:
+    - name: datasets
+      mountPath: /mnt/datasets
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+  volumes:
+  - name: datasets
+    persistentVolumeClaim:
+      claimName: shared-datasets

@@ -1,0 +1,118 @@
+# Incoming: shared-datasets (nq_train.json), shared-indexes (SPLADE index) --- {Dict,str}
+# Processing: SPLADE impact retrieval over DPR --- {1 job: LuceneImpactSearcher batch_search}
+# Outgoing: shared-indexes (SPLADE_nqtrain_all.res) --- {TREC runfile,str}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dpr-splade-retrieve-nqtrain-all
+  namespace: 425krish
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: splade-retrieve
+        image: image-registry.openshift-image-registry.svc:5000/425krish/splade-cu121:latest
+        imagePullPolicy: Always
+        command: ["/bin/bash", "-lc"]
+        env:
+        - name: HOME
+          value: /tmp
+        - name: TMPDIR
+          value: /tmp
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: NQ_PATH
+          value: /mnt/datasets/dpr/nq_train.json
+        - name: INDEX_DIR
+          value: /mnt/index/dpr/splade/index
+        - name: RUN_PATH
+          value: /mnt/index/dpr/runs/SPLADE_nqtrain_all.res
+        - name: TOP_K
+          value: "100"
+        - name: THREADS
+          value: "16"
+        args:
+        - |
+          set -euo pipefail
+          echo "[splade-retrieve] starting on $(hostname)"
+          echo "[splade-retrieve] nq_train: ${NQ_PATH}"
+          echo "[splade-retrieve] index:   ${INDEX_DIR}"
+          echo "[splade-retrieve] run:     ${RUN_PATH}"
+          python3 - << 'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from pyserini.search.lucene import LuceneImpactSearcher
+
+          nq_path = Path(os.environ["NQ_PATH"])
+          index_dir = Path(os.environ["INDEX_DIR"])
+          run_path = Path(os.environ["RUN_PATH"])
+          top_k = int(os.environ.get("TOP_K", "100"))
+          threads = int(os.environ.get("THREADS", "16"))
+
+          print(f"[splade-retrieve] loading queries from {nq_path}...")
+          with nq_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)["data"]
+
+          qids = []
+          texts = []
+          for ex in data:
+            qid = str(ex["example_id"])
+            text = ex["question"]
+            qids.append(qid)
+            texts.append(text)
+
+          print(f"[splade-retrieve] {len(qids)} queries loaded")
+
+          if not index_dir.exists():
+            raise FileNotFoundError(f"Index dir not found: {index_dir}")
+
+          print(f"[splade-retrieve] loading LuceneImpactSearcher from {index_dir}...")
+          searcher = LuceneImpactSearcher(
+            index_dir=str(index_dir),
+            query_encoder="naver/splade-cocondenser-ensembledistil",
+          )
+
+          print(f"[splade-retrieve] running batch_search with top_k={top_k}, threads={threads}...")
+          batch_hits = searcher.batch_search(
+            queries=texts,
+            qids=qids,
+            k=top_k,
+            threads=threads,
+          )
+
+          run_path.parent.mkdir(parents=True, exist_ok=True)
+          with run_path.open("w", encoding="utf-8") as out_f:
+            for qid in qids:
+              hits = batch_hits.get(qid, [])
+              for rank, hit in enumerate(hits, start=1):
+                out_f.write(
+                  f"{qid} Q0 {hit.docid} {rank} {hit.score:.6f} SPLADE\n"
+                )
+
+          print(f"[splade-retrieve] wrote runfile: {run_path}")
+          PY
+          echo "[splade-retrieve] DONE"
+        resources:
+          requests:
+            cpu: "16"
+            memory: "16Gi"
+          limits:
+            cpu: "32"
+            memory: "32Gi"
+        volumeMounts:
+        - name: datasets
+          mountPath: /mnt/datasets
+        - name: indexes
+          mountPath: /mnt/index
+      volumes:
+      - name: datasets
+        persistentVolumeClaim:
+          claimName: shared-datasets
+      - name: indexes
+        persistentVolumeClaim:
+          claimName: shared-indexes

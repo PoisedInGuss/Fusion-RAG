@@ -629,3 +629,4 @@ def format_improvement(baseline: float, improved: float, precision: int = 2) -> 
     return f"{sign}{pct:.{precision}f}%"
 
 
+
