@@ -162,6 +162,64 @@ def build_context(
     return docs
 
 
+def truncate_context_if_needed(
+    context_docs: List[Dict[str, str]],
+    max_context_tokens: int = 7000,
+) -> Tuple[List[Dict[str, str]], bool]:
+    """
+    Truncate context documents if total exceeds max_context_tokens.
+    Uses rough estimate: 1 token ~= 4 chars.
+    Only truncates when necessary (edge cases).
+    
+    Returns: (truncated_docs, was_truncated)
+    """
+    if not context_docs:
+        return context_docs, False
+    
+    # Rough token estimate
+    def estimate_tokens(text: str) -> int:
+        return len(text) // 4
+    
+    # Calculate total tokens
+    total_tokens = 0
+    doc_tokens = []
+    for doc in context_docs:
+        title = doc.get('title', '')
+        text = doc.get('text', '')
+        combined = f"{title}: {text}" if title else text
+        tokens = estimate_tokens(combined)
+        doc_tokens.append(tokens)
+        total_tokens += tokens
+    
+    # No truncation needed
+    if total_tokens <= max_context_tokens:
+        return context_docs, False
+    
+    # Truncation needed - distribute max_context_tokens proportionally
+    print(f"[truncate] context exceeds {max_context_tokens} tokens ({total_tokens}), truncating...")
+    
+    truncated_docs = []
+    for doc, doc_tok in zip(context_docs, doc_tokens):
+        # Allocate tokens proportionally
+        target_tokens = int((doc_tok / total_tokens) * max_context_tokens)
+        target_chars = target_tokens * 4
+        
+        title = doc.get('title', '')
+        text = doc.get('text', '')
+        
+        # Truncate text to fit target
+        if len(text) > target_chars:
+            text = text[:target_chars] + "..."
+        
+        truncated_docs.append({
+            "docid": doc.get("docid", ""),
+            "title": title,
+            "text": text
+        })
+    
+    return truncated_docs, True
+
+
 def write_shard(
     shard_idx: int,
     total_shards: int,
@@ -377,6 +435,10 @@ def main():
                 seen_ids=doc_ids_seen,
                 missing_ids=missing_doc_ids,
             )
+            
+            # Truncate context if needed (only for edge cases)
+            context_docs, was_truncated = truncate_context_if_needed(context_docs, max_context_tokens=7000)
+            
             context_chars = 0
             if context_docs:
                 context_chars = len(generator._format_context(context_docs))  # pylint: disable=protected-access
